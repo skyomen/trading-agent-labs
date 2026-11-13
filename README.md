@@ -60,13 +60,26 @@ Por padrão, documentos não saem do computador. Uma tarefa só inclui trechos i
 
 ## Provedor de IA
 
-O conector aceita uma API compatível com OpenAI Chat Completions. Nenhuma conexão é iniciada automaticamente. Configure as variáveis no ambiente do processo que inicia o portal:
+O conector aceita uma API compatível com OpenAI Chat Completions. Nenhuma conexão é iniciada automaticamente. Configure as variáveis no `.env` da raiz ou no ambiente do processo que inicia o portal:
 
 - `TRADING_LAB_LLM_BASE_URL` — URL base do provedor.
 - `TRADING_LAB_LLM_MODEL` — identificador do modelo.
 - `TRADING_LAB_LLM_API_KEY` — chave do provedor externo; para endpoint local pode ficar vazia.
 
 Exemplo de endpoint local: `http://localhost:11434/v1`. Para provedores externos, use HTTPS. O valor da chave não aparece na interface nem é armazenado no banco. A chamada ocorre somente ao executar uma tarefa.
+
+## Chaves de dados Alpaca
+
+Preencha no `.env` da raiz do projeto:
+
+```dotenv
+ALPACA_API_KEY=seu_Key_ID
+ALPACA_API_SECRET=seu_Secret_Key
+```
+
+O primeiro campo recebe o **Key ID** e o segundo o **Secret Key** da conta individual Trading API. O endereço do conector de dados é `https://data.alpaca.markets`; o endpoint de Trading/Paper fornecido pela Alpaca não é usado aqui. O acesso atual busca apenas barras históricas `feed=iex` após clique explícito no Laboratório. Não existe envio de ordens. Reinicie `python main.py dashboard` após preencher ou alterar o `.env`.
+
+O arquivo `.env` é ignorado pelo Git. `.env.example` contém apenas os nomes dos campos, sem valores reais. Variáveis definidas no ambiente do processo têm prioridade sobre o `.env`. Não cole as chaves no chat nem as salve no SQLite.
 
 ## Aprendizado e segurança
 

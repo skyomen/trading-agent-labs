@@ -11,6 +11,10 @@ from pathlib import Path
 
 import streamlit as st
 
+from services.config import load_local_env
+
+load_local_env()
+
 from database import store
 from services import documents
 from services import knowledge as knowledge_service

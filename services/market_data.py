@@ -18,6 +18,7 @@ from urllib.request import Request, urlopen
 
 from database import store
 from services import datasets
+from services.config import load_local_env
 
 REST = "https://data-api.binance.vision/api/v3/klines"
 STREAM = "wss://data-stream.binance.vision:443/ws/{}@kline_1m"
@@ -171,6 +172,7 @@ def collect_symbol_forever(symbol, stop_event=None):
 
 
 def main():
+    load_local_env()
     parser = argparse.ArgumentParser(description="Coletor público Binance; só candles fechados")
     parser.add_argument("command", choices=["import", "import-stock", "stream"])
     parser.add_argument("--symbol", choices=SYMBOLS + STOCKS)
