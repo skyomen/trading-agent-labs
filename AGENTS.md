@@ -44,6 +44,11 @@ Laboratório local para acompanhar seis agentes de pesquisa intraday, organizar 
 - **REQ-14 (derivado do roadmap)** — Estruturar conceitos e setups extraídos localmente com citação de arquivo/página/hash, estado de proposta e revisão humana. Apenas conhecimento aprovado e com hash de origem atual pode compor contexto de agente. Descoberta de setup não equivale a regra formal, estratégia aprovada ou autorização de backtest/operação.
 - **TRD-06** — Persistir conhecimento em `knowledge_items`, com versões por origem/página/hash e estados `proposed`, `approved` e `rejected`; a extração é determinística e local em `services/knowledge.py`.
 
+## Entrega 3 — quatro setups
+
+- **REQ-15** — VBS, VSS, BOP e BDP foram selecionados pelo usuário. As regras v1 têm parâmetros operacionais aprovados em 13/11/2026, versões imutáveis e fontes PDF com hash. O motor de sinais usa apenas barras já fechadas. O backtest dos quatro padrões pertence à Entrega 5.
+- **TRD-07** — `services/setup_specs.py` define e registra versões; `services/setup_signals.py` detecta sinais sem executar operações. O SQLite preserva rascunhos v1 e versões aprovadas v2. Incremento mínimo, custos e horário dependem dos metadados do histórico da Entrega 4.
+
 ## Contrato visual e rastreabilidade
 
 - Para REQ-13, `referencia.html` continua como autoridade estrutural e visual; o portal gera uma versão pt-BR ligada ao SQLite, conforme `DEC-2026-11-12-portal-localizado-dados-locais`. O antigo `trading-office-preview.html` continua como referência funcional do portal local.

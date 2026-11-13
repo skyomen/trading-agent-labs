@@ -1478,6 +1478,10 @@ O Knowledge Agent propõe quatro setups.
 
 O usuário aprova.
 
+**Estado em 13/11/2026:** o usuário selecionou VBS, VSS, BOP e BDP e aprovou os parâmetros v1. O SQLite preserva quatro rascunhos v1 e quatro versões v2 aprovadas para backtest. A especificação de origem e as decisões de implementação estão em `PROJECT_DOCUMENTATION.md`; o detector de sinais está em `services/setup_signals.py`. Ainda não há dataset nem backtest desses setups.
+
+**Prova:** `python main.py test` passou com 40 casos. O detector produziu ordens hipotéticas reproduzíveis para os quatro padrões sobre barras sintéticas. Playwright confirmou as versões aprovadas e a ausência de execução SMA indevida em 1440×1000, 390×844 e 320×740.
+
 Cada um recebe:
 
 ```text

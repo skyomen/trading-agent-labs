@@ -1122,13 +1122,24 @@ def page_backtests(counts):
         rules = json.loads(strategy["rules_json"])
         with st.container(border=True):
             st.markdown(f"**{strategy['name']} · v{strategy['version']}** · {strategy['status']}")
-            st.caption(f"Regra {rules.get('engine')} · rápida {rules.get('fast_window')} / lenta {rules.get('slow_window')} · taxa {rules.get('fee_bps')} bps/lado · slippage {rules.get('slippage_bps')} bps/lado · {strategy['source']}")
-            if strategy["status"] == "draft":
+            is_setup = rules.get("engine") == "setup_pattern_v1"
+            if is_setup:
+                st.caption(f"{rules['setup_id']} · {rules['side']} · {', '.join(rules['timeframes'])} · {strategy['source']}")
+                if strategy["status"] == "draft":
+                    st.info("Versão em revisão dos parâmetros. A aprovação de conhecimento não autoriza backtest.")
+                else:
+                    st.info("Regras aprovadas para backtest. A execução exige histórico compatível, incremento mínimo e custos informados; o motor de backtest dos quatro setups vem na Entrega 5.")
+                st.json({key: value for key, value in rules.items() if key not in {"source"}})
+                for source in rules["source"]:
+                    st.caption(f"Fonte: {source['path']} · páginas {', '.join(map(str, source['pages']))} · SHA-256 {source['sha256']}")
+            else:
+                st.caption(f"Regra {rules.get('engine')} · rápida {rules.get('fast_window')} / lenta {rules.get('slow_window')} · taxa {rules.get('fee_bps')} bps/lado · slippage {rules.get('slippage_bps')} bps/lado · {strategy['source']}")
+            if strategy["status"] == "draft" and not is_setup:
                 if st.button("Aprovar versão", key=f"approve-strategy-{strategy['id']}"):
                     store.approve_strategy(strategy["id"])
                     store.add_event("Usuário", "INFO", f"Estratégia #{strategy['id']} aprovada para backtest histórico")
                     st.rerun()
-            elif strategy["status"] == "approved" and datasets:
+            elif strategy["status"] == "approved" and datasets and not is_setup:
                 dataset = st.selectbox(
                     "Histórico para teste", datasets,
                     format_func=lambda item: f"{item['symbol']} · {item['timeframe']} · {item['filename']} · {item['row_count']} barras",

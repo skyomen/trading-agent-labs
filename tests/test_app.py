@@ -183,6 +183,19 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(reviewed["status"], "approved")
         self.assertEqual(reviewed["reviewed_by"], "Usuário")
 
+    def test_approved_setup_is_visible_without_sma_backtest_action(self):
+        rules = {"engine": "setup_pattern_v1", "setup_id": "SETUP_01",
+                 "side": "buy", "timeframes": ["2m", "5m"], "source": [],
+                 "approval": "rules_human_approved"}
+        strategy_id = store.save_strategy("VBS", rules, "PDF local")
+        self.assertTrue(store.approve_strategy(strategy_id))
+        app = app_for_local_lab()
+        app.session_state["tal-view"] = "Laboratório"
+        app.run()
+        self.assertFalse(app.exception, [item.message for item in app.exception])
+        self.assertTrue(any("Regras aprovadas para backtest" in item.value for item in app.info))
+        self.assertFalse(any("run-backtest" in str(button.key) for button in app.button))
+
 
 if __name__ == "__main__":
     unittest.main()

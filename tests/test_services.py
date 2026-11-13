@@ -85,11 +85,11 @@ class DocumentServiceTests(unittest.TestCase):
             first = knowledge.extract_proposals()
             second = knowledge.extract_proposals()
         items = store.list_knowledge_items()
-        self.assertEqual(first["items"], 23)
-        self.assertEqual(first["proposed"], 23)
+        self.assertEqual(first["items"], 25)
+        self.assertEqual(first["proposed"], 25)
         self.assertEqual(first["status"], "Revisão humana pendente")
         self.assertEqual(second["created"], 0)
-        self.assertEqual(len(items), 23)
+        self.assertEqual(len(items), 25)
         self.assertTrue(all(item["page_number"] > 0 and item["source_sha256"] == "current-hash"
                             and item["status"] == "proposed" for item in items))
 

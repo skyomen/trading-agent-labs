@@ -550,7 +550,14 @@ def get_historical_bars(dataset_id):
 
 def approve_strategy(strategy_id):
     with connect() as conn:
+        row = conn.execute("SELECT rules_json,status FROM strategies WHERE id=?", (strategy_id,)).fetchone()
+        if not row or row["status"] != "draft":
+            return False
+        rules = json.loads(row["rules_json"])
+        if rules.get("engine") == "setup_pattern_v1" and rules.get("approval") != "rules_human_approved":
+            raise ValueError("As regras operacionais deste setup ainda exigem aprovação humana.")
         conn.execute("UPDATE strategies SET status='approved' WHERE id=?", (strategy_id,))
+        return True
 
 
 def save_backtest(strategy_id, symbol, timeframe, data_source, data_sha256, metrics):
