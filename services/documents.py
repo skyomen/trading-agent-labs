@@ -90,6 +90,8 @@ def index_library(force=False):
             f"{result['pages']} páginas · {result['chunks']} trechos"
             + (f" · {result['error']}" if result.get("error") else ""),
         )
+    from services.knowledge import refresh_research_status
+    refresh_research_status()
     return results
 
 

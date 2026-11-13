@@ -2,7 +2,7 @@
 
 **Documento de controle do projeto para o Codex e para o responsável pelo Trading Agent Lab.**
 
-> Este documento complementa `AGENTS.md` e `PROJECT_REFERENCE.md`. Ele define o plano funcional e estratégico de evolução a partir do estado atual, com prioridade para a inteligência dos agentes, sincronização entre conhecimento → backtest → decisão → execução, aprendizagem controlada e futura utilização por outras pessoas.
+> Este documento complementa `AGENTS.md` e `PROJECT_DOCUMENTATION.md`. Ele define o plano funcional e estratégico de evolução a partir do estado atual, com prioridade para a inteligência dos agentes, sincronização entre conhecimento → backtest → decisão → execução, aprendizagem controlada e futura utilização por outras pessoas.
 >
 > **Regra central:** nenhuma etapa futura deve ser marcada como concluída apenas porque o código foi escrito. Cada etapa precisa produzir uma capacidade verificável no portal, testes automatizados e evidência de funcionamento.
 
@@ -1464,6 +1464,12 @@ saída
 
 O usuário consegue abrir a biblioteca e visualizar os conhecimentos/setups extraídos com fonte rastreável.
 
+### Registro de execução em 13/11/2026
+
+Entrega concluída no código. A biblioteca contém 6 conceitos e 23 setups descobertos como propostas, com trecho de evidência, página e SHA-256 da fonte. A revisão humana registra aprovação ou rejeição; propostas e fontes desatualizadas ficam fora do contexto aprovado. O Research Agent acompanha o estado da biblioteca local.
+
+Provas: `python -m py_compile app.py database/store.py services/documents.py services/knowledge.py services/agents.py` passou; `python main.py test` passou com 34 testes; Playwright mostrou citação, revisão e ausência de rolagem horizontal em 1440×1000, 390×844 e 320×740. O commit desta entrega registra os artefatos e o código.
+
 ---
 
 # 45. ENTREGA 3 — QUATRO SETUPS
@@ -1770,7 +1776,7 @@ Para cada entrega:
 
 ```text
 1. Ler AGENTS.md
-2. Ler PROJECT_REFERENCE.md
+2. Ler PROJECT_DOCUMENTATION.md
 3. Inspecionar o código
 4. Executar testes
 5. Diagnosticar

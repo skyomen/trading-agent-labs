@@ -11,6 +11,7 @@ import streamlit as st
 
 from database import store
 from services import documents
+from services import knowledge as knowledge_service
 from services.agents import provider_summary, run_agent_task
 from services.backtest import parse_ohlcv_csv, run_sma_crossover
 
@@ -269,6 +270,7 @@ function inicializarLocal(){
 
 st.set_page_config(page_title="Trading Agent Lab", layout="wide", initial_sidebar_state="collapsed")
 store.initialize()
+knowledge_service.refresh_research_status()
 
 AGENT_ICONS = {
     "Research Agent": "book", "Market Analyst": "chart", "Fundamental Analyst": "news",
@@ -803,6 +805,37 @@ def render_agent_detail(agent):
         else:
             st.info("Nenhuma tarefa de IA foi executada para este agente.")
     with knowledge:
+        if agent["name"] == "Research Agent":
+            st.markdown("#### Conhecimento extraído para revisão")
+            st.caption("Extração determinística local. Propostas não formalizam regra nem autorizam backtest ou operação.")
+            if st.button("Extrair propostas dos PDFs indexados", key="extract-knowledge"):
+                summary = knowledge_service.extract_proposals()
+                store.add_event("Research Agent", "INFO",
+                                f"Extração local concluída · {summary['items']} registros · {summary['proposed']} aguardam revisão")
+                st.success(f"{summary['items']} registros rastreáveis; {summary['proposed']} aguardam revisão humana.")
+                st.rerun()
+            items = store.list_knowledge_items()
+            if not items:
+                st.info("Ainda não há propostas estruturadas. Execute a extração local para iniciar a revisão.")
+            for item in items:
+                citation = f"{item['source_path']} · p. {item['page_number']} · SHA-256 {item['source_sha256']}"
+                with st.expander(f"{item['status'].upper()} · {item['kind'].title()} · {item['title']}"):
+                    st.caption(citation)
+                    st.write(item["evidence"])
+                    if item["kind"] == "setup":
+                        st.info("Descoberto na fonte; regras, gatilho, invalidação, custos e critérios ainda exigem formalização humana.")
+                    if item["status"] == "proposed":
+                        left, right = st.columns(2)
+                        with left:
+                            if st.button("Aprovar conhecimento", key=f"approve-knowledge-{item['id']}"):
+                                store.review_knowledge_item(item["id"], True)
+                                store.add_event("Usuário", "INFO", f"Conhecimento #{item['id']} aprovado para Research Agent")
+                                st.rerun()
+                        with right:
+                            if st.button("Rejeitar proposta", key=f"reject-knowledge-{item['id']}"):
+                                store.review_knowledge_item(item["id"], False)
+                                store.add_event("Usuário", "INFO", f"Conhecimento #{item['id']} rejeitado para Research Agent")
+                                st.rerun()
         docs, stale = documents.agent_context(agent["name"], limit=100)
         if stale:
             st.warning("Há arquivos sem índice atual, ainda não processados ou com falha. Eles não entram no contexto do agente: " + ", ".join(stale))

@@ -51,11 +51,18 @@ def _message_context(agent, include_documents):
     parts = []
     if include_documents:
         fresh, stale = documents.agent_context(agent)
+        allowed_paths = {item["relative_path"] for item in fresh}
         for item in fresh:
             parts.append(f"[FONTE: {item['filename']}, p. {item['page_number']}]\n{item['content']}")
         if stale:
             parts.append("[AVISO: arquivos sem índice atual e excluídos do contexto: "
                          + ", ".join(stale) + "]")
+        current_hashes = {item["path"]: (item["record"] or {}).get("sha256")
+                          for item in documents.library_status()
+                          if item["path"] in allowed_paths}
+        for item in store.list_knowledge_items(status="approved"):
+            if current_hashes.get(item["source_path"]) == item["source_sha256"]:
+                parts.append(f"[CONHECIMENTO APROVADO: {item['source_path']}, p. {item['page_number']} · {item['title']}]\n{item['evidence']}")
     memories = store.list_memories(agent, include_pending=False)
     for memory in memories[:12]:
         parts.append(f"[MEMÓRIA APROVADA: {memory['source']}]\n{memory['content']}")

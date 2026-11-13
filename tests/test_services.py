@@ -10,7 +10,8 @@ from pypdf import PdfWriter
 from database import store
 from services import documents
 from services.backtest import parse_ohlcv_csv, run_sma_crossover
-from services.agents import provider_summary, run_agent_task
+from services.agents import provider_summary, run_agent_task, _message_context
+from services import knowledge
 
 
 class DocumentServiceTests(unittest.TestCase):
@@ -73,6 +74,51 @@ class DocumentServiceTests(unittest.TestCase):
         self.assertEqual(status["status"], "stale")
         self.assertEqual(context, [])
         self.assertEqual(stale, ["reference_docs/shared/method.pdf"])
+
+    def test_knowledge_extraction_creates_cited_proposals_idempotently(self):
+        path = "reference_docs/shared/Setups Complementar Op. OV Atualizada.pdf"
+        record = {"sha256": "current-hash"}
+        library = [{"path": path, "filename": "Setups Complementar Op. OV Atualizada.pdf",
+                    "status": "indexed", "record": record}]
+        with patch.object(knowledge.documents, "library_status", return_value=library), \
+             patch.object(knowledge, "_page_text", return_value="NRB Narrow Range Bar · texto de evidência"):
+            first = knowledge.extract_proposals()
+            second = knowledge.extract_proposals()
+        items = store.list_knowledge_items()
+        self.assertEqual(first["items"], 23)
+        self.assertEqual(first["proposed"], 23)
+        self.assertEqual(first["status"], "Revisão humana pendente")
+        self.assertEqual(second["created"], 0)
+        self.assertEqual(len(items), 23)
+        self.assertTrue(all(item["page_number"] > 0 and item["source_sha256"] == "current-hash"
+                            and item["status"] == "proposed" for item in items))
+
+    def test_only_current_approved_knowledge_enters_agent_context(self):
+        approved = store.upsert_knowledge_item("concept", "Regra aprovada",
+                                               "reference_docs/shared/a.pdf", "hash", 2, "texto citado")
+        store.review_knowledge_item(1, True)
+        store.upsert_knowledge_item("concept", "Regra proposta",
+                                    "reference_docs/shared/a.pdf", "hash", 3, "proposta")
+        with patch.object(documents, "agent_context", return_value=([{"relative_path": "reference_docs/shared/a.pdf",
+                                                                        "filename": "a.pdf", "page_number": 2,
+                                                                        "content": "texto citado"}], [])), \
+             patch.object(documents, "library_status", return_value=[{"path": "reference_docs/shared/a.pdf",
+                    "record": {"sha256": "hash"}}]):
+            context = _message_context("Research Agent", True)
+        self.assertIn("Regra aprovada", context)
+        self.assertNotIn("Regra proposta", context)
+
+    def test_agent_context_excludes_knowledge_from_another_agents_folder(self):
+        private_path = "reference_docs/agents/execution-agent/private.pdf"
+        store.upsert_knowledge_item("concept", "Escopo privado", private_path,
+                                    "private-hash", 1, "contexto de execução")
+        store.review_knowledge_item(1, True)
+        visible = {"path": "reference_docs/shared/common.pdf", "record": {"sha256": "common-hash"}}
+        private = {"path": private_path, "record": {"sha256": "private-hash"}}
+        with patch.object(documents, "agent_context", return_value=([], [])), \
+             patch.object(documents, "library_status", return_value=[visible, private]):
+            context = _message_context("Research Agent", True)
+        self.assertNotIn("contexto de execução", context)
 
 
 class AgentConnectorTests(unittest.TestCase):

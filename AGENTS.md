@@ -37,7 +37,12 @@ Laboratório local para acompanhar seis agentes de pesquisa intraday, organizar 
 
 ## Referência técnica detalhada
 
-- [`PROJECT_REFERENCE.md`](PROJECT_REFERENCE.md) documenta a arquitetura implementada, fluxos, esquema SQLite, estado observado, limites, provas históricas e pendências. Atualize essa referência quando o comportamento documentado mudar; `AGENTS.md` continua sendo a autoridade para requisitos e regras.
+- [`PROJECT_DOCUMENTATION.md`](PROJECT_DOCUMENTATION.md) documenta a arquitetura implementada, fluxos, esquema SQLite, estado observado, limites, provas históricas e pendências. Atualize essa referência quando o comportamento documentado mudar; `AGENTS.md` continua sendo a autoridade para requisitos e regras.
+
+## Entrega 2 — Conhecimento Real
+
+- **REQ-14 (derivado do roadmap)** — Estruturar conceitos e setups extraídos localmente com citação de arquivo/página/hash, estado de proposta e revisão humana. Apenas conhecimento aprovado e com hash de origem atual pode compor contexto de agente. Descoberta de setup não equivale a regra formal, estratégia aprovada ou autorização de backtest/operação.
+- **TRD-06** — Persistir conhecimento em `knowledge_items`, com versões por origem/página/hash e estados `proposed`, `approved` e `rejected`; a extração é determinística e local em `services/knowledge.py`.
 
 ## Contrato visual e rastreabilidade
 

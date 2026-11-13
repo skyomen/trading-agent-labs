@@ -71,6 +71,25 @@ def initialize():
             )
         """)
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS knowledge_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL CHECK(kind IN ('concept','setup')),
+                title TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'proposed'
+                    CHECK(status IN ('proposed','approved','rejected')),
+                source_path TEXT NOT NULL,
+                source_sha256 TEXT NOT NULL,
+                page_number INTEGER NOT NULL,
+                evidence TEXT NOT NULL,
+                details_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                reviewed_at TEXT,
+                reviewed_by TEXT,
+                UNIQUE(kind,title,version,source_path,page_number,source_sha256)
+            )
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS agent_runs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 agent TEXT NOT NULL,
@@ -243,7 +262,7 @@ def list_events(limit=100):
 def counts():
     tables = ("agents", "events", "documents", "agent_runs", "agent_memories",
               "agent_reviews", "strategies", "backtests", "historical_datasets",
-              "paper_operations")
+              "paper_operations", "knowledge_items")
     with connect() as conn:
         return {table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                 for table in tables}
@@ -298,6 +317,49 @@ def get_document_context(agent, limit=12):
             LIMIT ?
         """, (f"reference_docs/agents/{slug}/%", limit)).fetchall()
         return [dict(row) for row in rows]
+
+
+def upsert_knowledge_item(kind, title, source_path, source_sha256, page_number,
+                          evidence, details=None):
+    with connect() as conn:
+        existing = conn.execute("""SELECT 1 FROM knowledge_items WHERE kind=? AND title=?
+            AND source_path=? AND source_sha256=? AND page_number=?""",
+            (kind, title, source_path, source_sha256, page_number)).fetchone()
+        if existing:
+            return False
+        version = conn.execute("""SELECT COALESCE(MAX(version),0)+1 FROM knowledge_items
+            WHERE kind=? AND title=? AND source_path=? AND page_number=?""",
+            (kind, title, source_path, page_number)).fetchone()[0]
+        conn.execute("""INSERT INTO knowledge_items
+            (kind,title,version,source_path,source_sha256,page_number,evidence,details_json)
+            VALUES(?,?,?,?,?,?,?,?)""",
+            (kind, title, version, source_path, source_sha256, page_number, evidence,
+             json.dumps(details or {}, ensure_ascii=False, sort_keys=True)))
+        return True
+
+
+def list_knowledge_items(kind=None, status=None):
+    query = "SELECT * FROM knowledge_items WHERE 1=1"
+    params = []
+    if kind:
+        query += " AND kind=?"; params.append(kind)
+    if status:
+        query += " AND status=?"; params.append(status)
+    query += " ORDER BY kind,title,page_number,id"
+    with connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+        items = [dict(row) for row in rows]
+    for item in items:
+        item["details"] = json.loads(item.pop("details_json"))
+    return items
+
+
+def review_knowledge_item(item_id, approved, reviewer="Usuário"):
+    status = "approved" if approved else "rejected"
+    with connect() as conn:
+        cur = conn.execute("""UPDATE knowledge_items SET status=?,reviewed_at=CURRENT_TIMESTAMP,
+            reviewed_by=? WHERE id=? AND status='proposed'""", (status, reviewer, item_id))
+        return cur.rowcount == 1
 
 
 def list_agent_runs(agent=None, limit=50):

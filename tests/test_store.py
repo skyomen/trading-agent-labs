@@ -37,7 +37,7 @@ class StoreTests(unittest.TestCase):
             )}
         self.assertTrue({"documents", "document_chunks", "agent_memories",
                          "agent_reviews", "strategies", "backtests",
-                         "paper_operations", "connections"}.issubset(names))
+                         "paper_operations", "connections", "knowledge_items"}.issubset(names))
 
     def test_event_is_persisted(self):
         store.add_event("Risk Manager", "INFO", "Teste de bloqueio")
@@ -91,6 +91,21 @@ class StoreTests(unittest.TestCase):
         rows = store.list_strategies()
         self.assertEqual({first, second}, {row["id"] for row in rows})
         self.assertEqual(sorted(row["version"] for row in rows), [1, 2])
+
+    def test_knowledge_proposals_are_idempotent_and_require_review(self):
+        args = ("concept", "Controle absoluto", "reference_docs/shared/a.pdf", "hash", 7, "evidência", {"x": 1})
+        self.assertTrue(store.upsert_knowledge_item(*args))
+        self.assertFalse(store.upsert_knowledge_item(*args))
+        item = store.list_knowledge_items()[0]
+        self.assertEqual(item["status"], "proposed")
+        self.assertTrue(store.review_knowledge_item(item["id"], True))
+        self.assertEqual(store.list_knowledge_items(status="approved")[0]["details"], {"x": 1})
+        self.assertFalse(store.review_knowledge_item(item["id"], False))
+        self.assertTrue(store.upsert_knowledge_item(
+            "concept", "Controle absoluto", "reference_docs/shared/a.pdf", "new-hash", 7,
+            "nova evidência", {"x": 2}))
+        versions = store.list_knowledge_items(kind="concept")
+        self.assertEqual(sorted(row["version"] for row in versions), [1, 2])
 
 if __name__ == "__main__":
     unittest.main()

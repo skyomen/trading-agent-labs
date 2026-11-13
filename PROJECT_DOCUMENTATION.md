@@ -134,14 +134,14 @@ Os nomes, estados e responsabilidades são inicializados em `database/store.py` 
 
 | Agente | Estado persistido observado | Responsabilidade registrada |
 |---|---|---|
-| Research Agent | Aguardando documentos | Extrai conceitos e setups dos PDFs. |
+| Research Agent | Revisão humana pendente (após a Entrega 2) | Extrai conceitos e setups dos PDFs. |
 | Market Analyst | Aguardando dados | Analisa mercado quando houver feed conectado. |
 | Fundamental Analyst | Aguardando dados | Analisa notícias, eventos e fundamentos. |
 | Strategy & Backtest | Aguardando setups | Formaliza regras e executa backtests. |
 | Risk Manager | Limites pendentes de revisão | Aguarda limites documentados; bloqueia propostas sem evidência e exige revisão humana. |
 | Execution Agent | Simulação local apenas | Recebe propostas aprovadas; conector de negociação permanece bloqueado. |
 
-**Divergência conhecida:** dois PDFs estão indexados, mas o estado do Research Agent permanece `Aguardando documentos`. O aplicativo preserva o estado armazenado e também expõe a situação documental; não altera silenciosamente o status do agente.
+Na captura histórica desta seção, o Research Agent ainda aparecia como `Aguardando documentos`, embora dois PDFs estivessem indexados. A Entrega 2 substitui esse comportamento por sincronização auditada ao iniciar o app, reindexar ou extrair conhecimento.
 
 ## 7. Persistência SQLite
 
@@ -155,6 +155,7 @@ O arquivo é `database/trading.db`; `database/store.py` configura `sqlite3.Row`,
 | `document_chunks` | Trechos do PDF associados ao documento e à página/índice. |
 | `agent_runs` | Tarefa, resumo de contexto, saída, estado e horário. |
 | `agent_memories` | Notas com tipo, fonte e estado `proposed`, `approved` ou `rejected`, além da revisão humana. |
+| `knowledge_items` | Conceitos e setups versionados, evidência, fonte, hash, página e revisão humana. |
 | `agent_reviews` | Observação, hipótese, aprendizado proposto, evento relacionado e estado de aprovação. |
 | `strategies` | Regras JSON, origem, versão e estado `draft`, `approved` ou `archived`. Nome + versão são únicos. |
 | `historical_datasets` | Arquivo, símbolo, intervalo, fonte declarada, SHA-256 e número de barras. |
@@ -163,26 +164,27 @@ O arquivo é `database/trading.db`; `database/store.py` configura `sqlite3.Row`,
 | `paper_operations` | Operações simuladas, lado, quantidade, preços, custo, fonte e estado aberto/encerrado/cancelado. |
 | `connections` | Provedor/estado/metadados de conectores, sem campo de chave secreta. |
 
-### Snapshot consultado em 13/11/2026
+### Snapshot consultado em 13/11/2026, após a Entrega 2
 
 Consulta somente leitura ao banco local (não é promessa de estado futuro):
 
 | Registro | Quantidade |
 |---|---:|
 | Agentes | 6 |
-| Eventos | 24 |
+| Eventos | 25 |
 | Documentos indexados/catalogados | 2 |
 | Trechos de PDF | 338 |
 | Execuções de agente | 0 |
 | Memórias | 0 |
 | Revisões | 0 |
+| Conhecimento estruturado | 29 propostas (6 conceitos e 23 setups), 0 aprovadas |
 | Estratégias | 0 |
 | Backtests | 0 |
 | Datasets OHLCV / barras | 0 / 0 |
 | Operações simuladas | 0 |
 | Conexões registradas | 0 |
 
-Os dois documentos no banco eram `reference_docs/shared/Oliver Velez/Apostila Oliver Velez.pdf` (311 páginas, 329 trechos) e `reference_docs/shared/Oliver Velez/Setups Complementar Op. OV Atualizada.pdf` (9 páginas, 9 trechos), ambos com estado `indexed` na consulta. Nenhum conteúdo integral de PDF é reproduzido nesta documentação.
+Os dois documentos no banco são `reference_docs/shared/Oliver Velez/Apostila Oliver Velez.pdf` (311 páginas, 329 trechos) e `reference_docs/shared/Oliver Velez/Setups Complementar Op. OV Atualizada.pdf` (9 páginas, 9 trechos), ambos com estado `indexed` na consulta. O Research Agent está em `Revisão humana pendente`. Nenhum conteúdo integral de PDF é reproduzido nesta documentação.
 
 ## 8. Biblioteca de PDFs
 
@@ -194,6 +196,18 @@ Os dois documentos no banco eram `reference_docs/shared/Oliver Velez/Apostila Ol
 6. `agent_context()` inclui apenas trechos frescos de documentos comuns e do diretório específico do agente, com escopo e limite de trechos. Documento com estado pendente, stale, failed ou no_text não entra no contexto.
 
 A ação de indexação está no modo Laboratório, em **Controle**. A leitura e indexação são locais. Se o usuário optar por enviar trechos a provedor externo durante uma tarefa, a UI exige inclusão explícita dos documentos e confirmação/autorização; os arquivos originais não são enviados por simples indexação.
+
+### Conhecimento estruturado e revisão humana (Entrega 2)
+
+O fluxo novo fica no perfil do Research Agent, em **Conhecimento**. A ação “Extrair propostas dos PDFs indexados” executa somente lógica local e determinística; não chama provedor de IA. Ela usa páginas identificadas da apostila principal para conceitos e do suplemento para títulos de setups, guardando o trecho integral daquela página como evidência. A extração é idempotente para a mesma fonte e hash.
+
+Cada registro em `knowledge_items` guarda tipo (`concept`/`setup`), título, versão, estado, caminho relativo, SHA-256, página, evidência, detalhes estruturados e dados de revisão (data e revisor). Uma mudança no hash cria nova versão da proposta; não reescreve a decisão anterior. Os status atuais são `proposed`, `approved` e `rejected`. Aprovar significa aceitar o registro como conhecimento revisado; não transforma setup em estratégia executável. O contexto respeita o escopo documental de cada agente e exclui fontes de outras pastas de agente.
+
+Os 23 títulos do suplemento são descobertas (`DISCOVERED`) e ainda não têm formalizados todos os campos de regra, gatilho, invalidação, custos e contexto. A interface deixa isso explícito. Os seis conceitos iniciais também são propostas, não fatos de mercado. Revisão e rejeição são ações humanas explícitas, registradas em eventos. Propostas e rejeições nunca entram no contexto aprovado do agente. Conhecimento aprovado só entra quando o usuário inclui documentos na tarefa, a tarefa satisfaz o fluxo de autorização existente e o hash da fonte continua igual ao arquivo atual.
+
+O status persistido do Research Agent é sincronizado a partir da situação local: aguarda documentos se nenhum PDF atual está indexado; aguarda extração quando há PDFs atuais mas nenhum item estruturado; indica revisão humana enquanto há propostas; e indica conhecimento revisado após a aprovação das propostas pendentes. Essa sincronização ocorre ao abrir o aplicativo, indexar a biblioteca e extrair propostas, e só grava evento quando o status muda. Fontes com hash divergente não alimentam contexto.
+
+Para esta entrega, o catálogo de setups cobre páginas 1–5 e 7–9 do suplemento. A extração por catálogo não afirma que as demais páginas ou capítulos estejam completamente estruturados. Imagens, gráficos e tabelas não foram submetidos a OCR; o texto extraído depende do conteúdo textual do PDF. A revisão humana continua necessária para validar significado, completude e campos técnicos.
 
 ## 9. Provedor de IA e execução de tarefas
 
@@ -271,7 +285,9 @@ Os testes estão divididos em:
 - `tests/test_services.py`: indexação local/idempotente de PDF, limite de caminho, escopo de contexto, detecção de hash stale, configuração/consentimento do provedor, registro de tarefas, CSV e resultados do motor SMA.
 - `tests/test_app.py`: portal localizado com dados persistidos, separação entre eventos e trades, áreas/vistas, sala de execução, ausência de dados fictícios, memória e revisão.
 
-O comando de prova do projeto é `python main.py test`. Os testes **não foram executados nesta tarefa**; a existência dos casos foi verificada lendo os arquivos de teste. A run de 12/11 para restauro visual reportou `python -m py_compile app.py` aprovado e checks de interação/responsividade daquela rodada; ela explicitamente não executou a suíte automatizada.
+Entrega 2 acrescenta provas de migração aditiva, deduplicação de propostas, versionamento por hash, citações de página e filtragem de contexto para conhecimento aprovado. A execução atual da suíte será registrada na run desta entrega.
+
+O comando de prova do projeto é `python main.py test`. Na Entrega 2, 35 testes passaram. `python -m py_compile app.py database/store.py services/documents.py services/knowledge.py services/agents.py` também passou. A verificação Playwright abriu a biblioteca e confirmou citação, botão de aprovação e ausência de rolagem horizontal em 1440×1000, 390×844 e 320×740. A run de 12/11 documenta uma rodada visual anterior e não substitui essas provas.
 
 ## 15. Segurança e privacidade
 
@@ -304,7 +320,7 @@ O comando de prova do projeto é `python main.py test`. Os testes **não foram e
 - Confirmar licença, documentação e SDK do XP Trader 5.0.4.34 e conta de simulação antes de qualquer integração.
 - Definir/implementar o fluxo operacional de registro de operações simuladas conforme os dados e regras que forem aprovados; a tabela e a apresentação existem, mas o snapshot tem zero operações.
 - Criar/importar estratégias e dados históricos para gerar backtests reais/reproduzíveis; não havia registros no snapshot.
-- Revisar a divergência entre o estado `Aguardando documentos` do Research Agent e os dois PDFs indexados; ela está preservada de forma explícita.
+- Revisar manualmente conceitos e setups propostos; aprovação não formaliza estratégia executável nem autoriza backtest ou operação.
 - Registrar execuções de agentes e avaliar seus resultados somente depois que o provedor e o contexto estiverem autorizados.
 
 ## 17. Rastreabilidade

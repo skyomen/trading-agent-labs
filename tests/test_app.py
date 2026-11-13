@@ -52,10 +52,10 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("counts.agents||0", rendered)
         self.assertIn("cortar(a.status,13)", rendered)
         self.assertIn("function pintarSalaCompacta()", rendered)
-        self.assertIn("wrapSvgText(a.status,21)", rendered)
+        self.assertIn("wrapSvgText(a.status,27)", rendered)
         self.assertIn('viewBox","0 0 390 660"', rendered)
-        self.assertIn('width="190" height="78"', rendered)
-        self.assertIn('width="250" height="78"', rendered)
+        self.assertIn('width="358" height="23"', rendered)
+        self.assertIn('width="166" height="49"', rendered)
         self.assertIn("overflow-x:hidden!important;overflow-y:auto!important", rendered)
         self.assertIn(".tabs{overflow:hidden!important", rendered)
         self.assertNotIn(".tabs{overflow-x:auto", rendered)
@@ -165,6 +165,23 @@ class DashboardTests(unittest.TestCase):
         memories = store.list_memories("Research Agent", include_pending=False)
         self.assertEqual([item["content"] for item in memories], ["Bloquear candles sem timestamp"])
         self.assertTrue(any(event["Agente"] == "Usuário" for event in store.list_events()))
+
+    def test_knowledge_library_shows_citation_and_human_review_action(self):
+        store.upsert_knowledge_item(
+            "setup", "NRB — Narrow Range Bar", "reference_docs/shared/setup.pdf",
+            "sha256-test", 1, "Trecho de evidência da página")
+        item_id = store.list_knowledge_items()[0]["id"]
+        app = app_for_local_lab().run()
+
+        self.assertFalse(app.exception, [item.message for item in app.exception])
+        self.assertTrue(any("PROPOSED" in item.label and "NRB" in item.label for item in app.expander))
+        self.assertIn("reference_docs/shared/setup.pdf · p. 1 · SHA-256 sha256-test",
+                      [item.value for item in app.caption])
+        next(button for button in app.button if button.label == "Aprovar conhecimento").click().run()
+
+        reviewed = next(item for item in store.list_knowledge_items() if item["id"] == item_id)
+        self.assertEqual(reviewed["status"], "approved")
+        self.assertEqual(reviewed["reviewed_by"], "Usuário")
 
 
 if __name__ == "__main__":
