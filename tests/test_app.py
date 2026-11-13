@@ -93,6 +93,26 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('"trade_count": 1', rendered)
         self.assertIn("Abrir laboratório completo", rendered)
 
+    def test_market_pages_show_historical_iex_and_connector_readiness(self):
+        bars = [{"timestamp": f"2026-11-12T14:3{i}:00Z", "open": 100.0,
+                 "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10.0}
+                for i in range(3)]
+        store.save_historical_dataset("iex.csv", "AAPL", "1m", "Alpaca IEX", "fixture-hash",
+                                      bars, metadata={"market": "us_equity", "end_utc": bars[-1]["timestamp"]},
+                                      canonical_sha256="fixture-canonical")
+        with patch.dict("os.environ", {"ALPACA_API_KEY": "test-key", "ALPACA_API_SECRET": "test-secret"}):
+            portal = AppTest.from_file(str(APP_PATH)).run()
+            self.assertFalse(portal.exception)
+            rendered = portal.get("iframe")[0].proto.srcdoc
+            self.assertIn('"source": "Alpaca IEX"', rendered)
+            self.assertIn('"alpaca_configured": true', rendered)
+            self.assertNotIn("test-secret", rendered)
+            app = app_for_local_lab()
+            app.session_state["tal-nav"] = "Mercado"
+            app.run()
+            self.assertFalse(app.exception)
+            self.assertTrue(any("Alpaca IEX" in str(item.value) for item in app.dataframe))
+
     def test_local_lab_dashboard_uses_real_persisted_state(self):
         app = app_for_local_lab().run()
 

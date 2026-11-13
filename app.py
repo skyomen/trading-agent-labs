@@ -41,7 +41,7 @@ function T(x,y,text,size,fill,extra){return '<text x="'+x+'" y="'+y+'" font-size
 function cortar(text,n){text=String(text);return text.length>n?text.slice(0,n-1)+"…":text;}
 function caja(u,v,du,dv,h,top,side1,side2){var a=P(u-du/2,v-dv/2),b=P(u+du/2,v-dv/2),c=P(u+du/2,v+dv/2),d=P(u-du/2,v+dv/2);return poly([b,c,sube(c,h),sube(b,h)],side2)+poly([d,c,sube(c,h),sube(d,h)],side1)+poly([sube(a,h),sube(b,h),sube(c,h),sube(d,h)],top);}
 function kpi(label,value){return '<div class="kpi"><small>'+label+'</small><strong>'+value+'</strong></div>';}
-var LOCAL = window.TAL_DATA || {agents:[], counts:{}, documents:[], events:[], connections:[], market_feeds:[], backtests:[]};
+var LOCAL = window.TAL_DATA || {agents:[], counts:{}, documents:[], events:[], connections:[], market_feeds:[], historical_datasets:[], paper_operations:[], backtests:[]};
 function feedAtual(){return (LOCAL.market_feeds||[]).filter(function(f){return f.effective_status==="connected";});}
 function feedResumo(){var n=feedAtual().length;return n?n+" feed(s) cripto de candles fechados":"Sem feed de mercado atual";}
 var LOCAL_COLORS = ["#7fb4ff", "#5fd3d0", "#c99bff", "#e8c66a", "#ff9f6b", "#8fdcb0"];
@@ -77,24 +77,29 @@ function pintarRanking(){
   ligarRanking();
 }
 function pintarOps(){
-  var events=LOCAL.events||[];
-  $("p-ops").innerHTML='<div class="sec">Atividade registrada</div>'+(events.length?events.map(function(e){
+  var events=LOCAL.events||[], operations=LOCAL.paper_operations||[];
+  var paper='<div class="sec">Operações simuladas registradas</div>'+(operations.length?operations.map(function(o){
+    return '<div class="item local-activity"><time>'+localText(o.created_at)+'</time><span><b>#'+localText(o.id)+' · '+localText(o.symbol)+' · '+localText(o.side)+'</b><br>'+localText(o.state)+' · '+localText(o.quantity)+' unidades · origem: '+localText(o.source)+'</span></div>';
+  }).join(""):'<p class="local-empty">Nenhuma operação simulada conciliada no SQLite. Backtests não são operações de conta.</p>');
+  $("p-ops").innerHTML=paper+'<div class="sec">Atividade registrada</div>'+(events.length?events.map(function(e){
     var message=String(e.Atividade||"").replace(/\bindexed\b/gi,"indexado");
     return '<div class="item local-activity"><time>'+localText(localFormatTime(e["Horário"]))+'</time><span><b>'+localText(e.Agente==="Trading Lab"?"Sistema":e.Agente)+'</b><br>'+localText(localLevel(e.Nível))+' · '+localText(message)+'</span></div>';
   }).join(""):'<p class="local-empty">Ainda não há eventos locais registrados.</p>')+'<p class="note">Este histórico é lido do banco SQLite e permanece após reiniciar o aplicativo.</p>';
 }
 function pintarInforme(){
   var c=LOCAL.counts, docs=LOCAL.documents.filter(function(d){return d.status==="indexed";}).length;
+  var current=feedAtual().length;
   $("p-inf").innerHTML='<div class="sec">Estado do laboratório</div>'+[
     ["Agentes cadastrados",c.agents||0],["Tarefas de agentes executadas",c.agent_runs||0],["Documentos indexados",docs],
-    ["Estratégias registradas",c.strategies||0],["Backtests registrados",c.backtests||0],["Operações simuladas",c.paper_operations||0]
+    ["Estratégias registradas",c.strategies||0],["Backtests registrados",c.backtests||0],["Snapshots históricos",c.historical_datasets||0],
+    ["Feeds cripto atuais",current],["Operações simuladas",c.paper_operations||0]
   ].map(function(x){return '<div class="local-metric"><span>'+localText(x[0])+'</span><b>'+x[1]+'</b></div>';}).join("")+
-  '<p class="note">A contagem reflete somente registros locais. Sem tarefas, backtests ou operações gravadas, não há resultado a avaliar.</p>';
+  '<p class="note">Contagens do SQLite local. Alpaca IEX: '+(LOCAL.alpaca_configured?'credenciais presentes; importação histórica manual':'credenciais ausentes')+'. Backtests não são operações; agentes só executam tarefas iniciadas pelo usuário.</p>';
 }
 function pintarControl(){
   var docs=LOCAL.documents||[], con=LOCAL.connections||[];
   $("p-ctl").innerHTML='<div class="sec">Conexões e segurança</div><div class="kv">'+
-    '<span>Feed de mercado</span><span>'+localText(feedResumo())+'</span><span>XP Trader 5.0.4.34</span><span>Não conectado</span><span>Modo</span><span>Simulação local</span><span>Ordens reais</span><span>Bloqueadas</span></div>'+
+    '<span>Feed cripto</span><span>'+localText(feedResumo())+'</span><span>Alpaca IEX</span><span>'+(LOCAL.alpaca_configured?'Credenciais presentes; histórico manual':'Credenciais ausentes')+'</span><span>Ações em tempo real</span><span>Sem feed validado</span><span>XP Trader 5.0.4.34</span><span>Não conectado</span><span>Modo</span><span>Simulação local</span><span>Ordens reais</span><span>Bloqueadas</span></div>'+
     '<div class="sec">Biblioteca local</div>'+(docs.length?docs.map(function(d){return '<div class="item"><span>'+localText(d.filename)+' · '+localText(localDocumentStatus(d.status))+'</span></div>';}).join(""):'<p class="local-empty">Nenhum documento registrado no índice.</p>')+
     '<div class="sec">Conectores registrados</div>'+(con.length?con.map(function(x){return '<div class="item"><span>'+localText(x.provider||x.key)+' · '+localText(localConnectionStatus(x.status))+'</span></div>';}).join(""):'<p class="local-empty">Nenhum conector foi configurado.</p>')+
     '<p class="note">Este painel não conecta contas nem envia ordens. Uma conexão futura exige configuração e autorização próprias.</p>';
@@ -221,7 +226,7 @@ function pintarParte(){
   var research=D.agentes.find(function(a){return a.nome==="Research Agent";});
   var mismatch=research&&indexed>0&&/aguardando documentos/i.test(research.status)
     ? '<li>Atenção: o Research Agent ainda está marcado como aguardando documentos, embora '+indexed+' PDF(s) estejam indexados. O estado não é atualizado automaticamente.</li>' : '';
-  el.innerHTML='<div class="pt"><h3>Diretor geral</h3><div class="tit">Resumo do laboratório</div><ul><li>'+D.agentes.length+' agentes locais cadastrados; o portal não os executa em segundo plano.</li><li>'+((LOCAL.counts.agent_runs||0))+' tarefas executadas e '+((LOCAL.counts.events||0))+' eventos no histórico.</li>'+mismatch+'<li>'+localText(feedResumo())+'; nenhuma ordem real pode ser enviada.</li></ul></div>';
+  el.innerHTML='<div class="pt"><h3>Diretor geral</h3><div class="tit">Resumo do laboratório</div><ul><li>'+D.agentes.length+' agentes locais cadastrados; o portal não os executa em segundo plano.</li><li>'+((LOCAL.counts.agent_runs||0))+' tarefas executadas, '+((LOCAL.counts.backtests||0))+' backtests e '+((LOCAL.counts.events||0))+' eventos no histórico.</li>'+mismatch+'<li>'+localText(feedResumo())+'; '+((LOCAL.counts.historical_datasets||0))+' snapshots históricos. Nenhuma ordem real pode ser enviada.</li></ul></div>';
 }
 function pintarFicha(){
   var a=D.agentes[SEL];if(!a)return;
@@ -245,15 +250,20 @@ function pintarLab(){
 }
 function pintarEvolucion(){
   var font=window.innerWidth<500?32:17;
-  $("evchart").innerHTML='<text x="450" y="210" text-anchor="middle" fill="#aab8c8" font-size="'+font+'" font-family="Archivo,sans-serif">Sem operações simuladas encerradas para mostrar.</text>';
-  $("leg").innerHTML=""; $("evnote").textContent="A evolução do capital só aparecerá quando existirem operações locais persistidas.";
+  var closed=(LOCAL.paper_operations||[]).filter(function(o){return o.state==="closed"&&o.exit_price!=null;});
+  $("evchart").innerHTML='<text x="450" y="210" text-anchor="middle" fill="#aab8c8" font-size="'+font+'" font-family="Archivo,sans-serif">'+(closed.length?closed.length+' operações simuladas encerradas':'Sem operações simuladas encerradas para mostrar.')+'</text>';
+  $("leg").innerHTML=closed.map(function(o){return '<div class="local-metric"><span>#'+localText(o.id)+' · '+localText(o.symbol)+' · '+localText(o.side)+' · '+localText(o.closed_at||o.created_at)+'</span></div>';}).join("");
+  $("evnote").textContent=closed.length?"Operações simuladas do SQLite. Não há saldo inicial ou curva de capital confiável para esta vista.":"Backtests históricos não são operações de conta. A evolução do capital exige operações simuladas encerradas e persistidas.";
 }
 function pintarMercado(){
-  $("mhead").innerHTML='<div class="sec">Mercado</div>';
+  var datasets=LOCAL.historical_datasets||[], stocks=datasets.filter(function(d){return d.market==="us_equity";});
+  $("mhead").innerHTML='<div class="sec">Mercado · registros locais</div>'+
+    '<div class="local-band"><b>Históricos de ações: '+stocks.length+'</b><span>Alpaca IEX '+(LOCAL.alpaca_configured?'configurada para importação manual':'sem credenciais')+' · sem streaming de ações</span></div>'+
+    stocks.map(function(d){return '<div class="local-metric"><span><b>'+localText(d.symbol)+' · '+localText(d.source)+'</b><br>'+localText(d.timeframe)+' · '+localText(d.row_count)+' barras · última '+localText(d.end_utc||'não informada')+' UTC<br><small>SHA-256 '+localText(d.sha256.slice(0,16))+'… · histórico, não cotação atual</small></span></div>';}).join("");
   var font=window.innerWidth<500?32:17;
   var feeds=LOCAL.market_feeds||[];
   $("rng").innerHTML=""; $("mchart").innerHTML='<text x="450" y="220" text-anchor="middle" fill="#aab8c8" font-size="'+font+'" font-family="Archivo,sans-serif">'+localText(feedResumo())+'</text>';
-  $("mnote").textContent=feeds.length?feeds.map(function(f){return f.symbol+" · Binance Spot · fechamento 1m "+(f.last_close==null?"indisponível":f.last_close)+" USDT · "+(f.last_bar_at||"sem barra")+" UTC · "+f.effective_status;}).join(" | ")+". Histórico local; nenhuma ordem é enviada.":"Nenhum feed de mercado persistido. Histórico não equivale a cotação atual.";
+  $("mnote").textContent=feeds.length?feeds.map(function(f){return f.symbol+" · "+f.provider+" · último fechamento 1m "+(f.last_close==null?"indisponível":f.last_close)+" USDT · "+(f.last_bar_at||"sem barra")+" UTC · "+f.effective_status;}).join(" | ")+". Candles fechados persistidos; não são preço executável.":"Nenhum feed de mercado persistido. Histórico não equivale a cotação atual.";
 }
 function mercadoActivar(){}
 function pintarTab(){
@@ -511,6 +521,33 @@ def current_crypto_feeds():
     return active
 
 
+def market_overview():
+    """Read-only view of persisted market records and local connector readiness."""
+    now = datetime.now(timezone.utc)
+    feeds = []
+    for feed in store.list_market_feeds():
+        checked = datetime.fromisoformat(feed["checked_at"].replace("Z", "+00:00")
+                                        if "T" in feed["checked_at"] else feed["checked_at"] + "+00:00")
+        last_at = datetime.fromisoformat(feed["last_bar_at"].replace("Z", "+00:00")) if feed["last_bar_at"] else None
+        current = (feed["status"] == "connected" and last_at is not None
+                   and (now - checked).total_seconds() < 120
+                   and (now - last_at).total_seconds() < 180)
+        bars = store.get_market_bars(feed["provider"], feed["symbol"], feed["timeframe"], limit=1)
+        feeds.append({"provider": feed["provider"], "symbol": feed["symbol"],
+                      "timeframe": feed["timeframe"], "state": "atual" if current else "atrasado ou desconectado",
+                      "last_bar_at": feed["last_bar_at"],
+                      "last_close": bars[-1]["close"] if bars else None})
+    datasets = []
+    for item in store.list_historical_datasets():
+        meta = json.loads(item["metadata_json"])
+        datasets.append({"id": item["id"], "symbol": item["symbol"],
+                         "source": item["source"], "timeframe": item["timeframe"],
+                         "row_count": item["row_count"], "end_utc": meta.get("end_utc"),
+                         "sha256": item["sha256"], "market": meta.get("market")})
+    return {"feeds": feeds, "datasets": datasets,
+            "alpaca_configured": bool(os.environ.get("ALPACA_API_KEY") and os.environ.get("ALPACA_API_SECRET"))}
+
+
 def topbar(agents, counts):
     indexed = sum(item["status"] == "indexed" for item in store.list_documents())
     live_count = len(current_crypto_feeds())
@@ -758,12 +795,14 @@ def page_rooms(agents, counts):
     if view == "Sala":
         room = st.radio("Sala", ["Analistas", "Execução"], horizontal=True, key="tal-room", label_visibility="collapsed")
         events = store.list_events(limit=100)
+        overview = market_overview()
+        current_feeds = sum(item["state"] == "atual" for item in overview["feeds"])
         st.markdown(
             f'<div class="tal-room-head"><strong>Sala de {esc(room.lower())}</strong>'
             f'<span>{"5 mesas de análise" if room == "Analistas" else "1 posto de execução · recepção bloqueada"}</span></div>'
             f'<div class="tal-floor-wrap"><div class="tal-floor-wide">{room_svg(agents, counts, events, room)}</div>'
             f'<div class="tal-floor-compact">{room_svg_compact(agents, counts, events, room)}</div></div>'
-            '<div class="tal-stage-caption">Estados do SQLite local. Selecione uma mesa pela lista de agentes; nenhum feed ou ordem está ativo.</div>',
+            f'<div class="tal-stage-caption">Estados do SQLite local. Selecione uma mesa pela lista de agentes; {current_feeds} feed(s) cripto atuais. Ordens reais bloqueadas.</div>',
             unsafe_allow_html=True,
         )
         team = [a for a in agents if (a["name"] == "Execution Agent") == (room == "Execução")]
@@ -786,13 +825,14 @@ def page_rooms(agents, counts):
         director_items = [
             f"{len(agents)} agentes cadastrados no banco local.",
             f"{counts['documents']} documentos indexados; {counts['agent_runs']} tarefas de IA registradas.",
-            "Fontes de mercado: desconectadas para criptoativos e ações dos EUA.",
+            f"Mercado: {current_feeds} feeds cripto atuais e {len(overview['datasets'])} snapshots históricos; ações sem feed em tempo real.",
+            f"Alpaca IEX: {'credenciais locais presentes' if overview['alpaca_configured'] else 'credenciais ausentes'}; importação histórica manual.",
             "Sala de execução isolada; ordens reais bloqueadas e sem envio de operações.",
         ]
         st.markdown(
             '<div class="tal-director"><div class="tal-director-head"><strong>Parte do diretor</strong>'
             '<span>Resumo determinístico do estado local · sem análise de mercado</span></div>'
-            '<p>O laboratório mantém a atividade organizada e rastreável. A operação continua aguardando as conexões e os critérios de risco.</p>'
+            '<p>O laboratório mantém a atividade organizada e rastreável. Tarefas de agentes e coleta contínua exigem início explícito; a operação continua aguardando critérios de risco.</p>'
             f'<ul>{"".join(f"<li>{esc(item)}</li>" for item in director_items)}</ul></div>',
             unsafe_allow_html=True,
         )
@@ -972,13 +1012,41 @@ def render_agent_detail(agent):
 
 
 def page_market():
-    header("Mercado", "Cotações e análises só aparecem quando uma fonte verificável, com horário e cobertura, estiver conectada.", "SEM FEED")
+    overview = market_overview()
+    current = sum(item["state"] == "atual" for item in overview["feeds"])
+    header("Mercado", "Feeds de candles fechados e snapshots históricos persistidos, com origem e horário.",
+           f"{current} FEEDS ATUAIS")
     crypto, stocks = st.tabs(["Criptoativos", "Ações dos EUA"])
-    for tab, title in ((crypto, "Criptoativos"), (stocks, "Ações dos EUA")):
-        with tab:
-            st.markdown(f"### {title}")
-            st.info("Nenhuma fonte está conectada. Este painel não exibe cotações, candles, indicadores nem sinais de exemplo.")
-            st.caption("Escolha e conecte um provedor em Controle; a integração será identificada por fonte e horário de atualização.")
+    with crypto:
+        feeds = [item for item in overview["feeds"] if item["provider"] == market_data.PROVIDER]
+        if feeds:
+            st.dataframe([{"Par": item["symbol"], "Fonte": item["provider"],
+                           "Estado": item["state"], "Última barra UTC": item["last_bar_at"],
+                           "Último fechamento persistido (USDT)": item["last_close"]}
+                          for item in feeds], hide_index=True, width="stretch")
+        else:
+            st.info("Nenhum feed cripto persistido. Inicie o coletor separadamente para receber candles fechados.")
+        snapshots = [item for item in overview["datasets"] if item["market"] == "crypto"]
+        if snapshots:
+            st.markdown("#### Snapshots históricos")
+            st.dataframe([{"Par": item["symbol"], "Fonte": item["source"],
+                           "Intervalo": item["timeframe"], "Barras": item["row_count"],
+                           "Última barra UTC": item["end_utc"], "SHA-256": item["sha256"]}
+                          for item in snapshots], hide_index=True, width="stretch")
+        st.caption("Último fechamento não é cotação executável. Estado atual exige processo coletor e barra recentes; histórico não é feed ao vivo.")
+    with stocks:
+        st.markdown("#### AAPL e MSFT · históricos locais")
+        snapshots = [item for item in overview["datasets"] if item["market"] == "us_equity"]
+        if snapshots:
+            st.dataframe([{"Ação": item["symbol"], "Fonte": item["source"],
+                           "Intervalo": item["timeframe"], "Barras": item["row_count"],
+                           "Última barra UTC": item["end_utc"], "SHA-256": item["sha256"]}
+                          for item in snapshots], hide_index=True, width="stretch")
+        else:
+            st.info("Nenhum histórico de ações importado.")
+        st.info("Credenciais Alpaca IEX presentes no ambiente local." if overview["alpaca_configured"]
+                else "Credenciais Alpaca IEX ausentes do ambiente local.")
+        st.caption("Alpaca IEX e Market History são fontes históricas nesta entrega. Não há streaming de ações validado; IEX não representa o mercado consolidado.")
 
 
 def page_operations():
@@ -1002,7 +1070,13 @@ def page_reports(counts):
             with col:
                 st.markdown(f'<div class="tal-metric"><small>{label}</small><strong>{counts[key]}</strong><span>registro SQLite</span></div>', unsafe_allow_html=True)
     st.markdown("#### Síntese do diretor")
-    st.write("Os agentes e o histórico local estão disponíveis. Fontes de mercado e conexão de negociação não estão ativas. Nenhuma avaliação de desempenho ou recomendação é calculada sem esses insumos.")
+    overview = market_overview()
+    current = sum(item["state"] == "atual" for item in overview["feeds"])
+    st.write(f"{counts['historical_datasets']} snapshots históricos e {counts['backtests']} backtests persistidos; "
+             f"{current} feeds de candles fechados atuais. "
+             f"Alpaca IEX: {'credenciais locais presentes' if overview['alpaca_configured'] else 'credenciais ausentes'}. "
+             "Os seis agentes só executam tarefas mediante ação explícita. XP Trader e ordens reais permanecem desconectados/bloqueados.")
+    st.caption("Backtests são simulações históricas; não são operações de conta nem saldo. Amostras de ações IEX não constituem feed em tempo real.")
     runs = store.list_agent_runs(limit=20)
     if runs:
         st.markdown("#### Resultados registrados")
@@ -1015,10 +1089,16 @@ def page_reports(counts):
 
 
 def page_controls():
+    overview = market_overview()
+    current = sum(item["state"] == "atual" for item in overview["feeds"])
+    stock_count = sum(item["market"] == "us_equity" for item in overview["datasets"])
     header("Controle", "Estado das proteções e bloqueios do ambiente. Esta tela não autoriza nem envia ordens.", "MODO LOCAL")
     rows = [
         ("Ordens reais", "Bloqueadas"), ("Conta XP Trader", "Não conectada"),
-        ("Feed de mercado", f"{len(current_crypto_feeds())} / 2 cripto atuais; ações sem feed"), ("Validação de risco", "Limites aguardam configuração"),
+        ("Feed de mercado", f"{current} / 2 cripto atuais; ações sem feed"),
+        ("Alpaca IEX", "Credenciais locais presentes; importação histórica manual" if overview["alpaca_configured"] else "Credenciais ausentes"),
+        ("Históricos de ações", f"{stock_count} snapshots persistidos"),
+        ("Validação de risco", "Limites aguardam configuração"),
         ("Promoção de aprendizado", "Aprovação humana obrigatória"),
         ("Credenciais", "Não armazenadas no SQLite"),
     ]
@@ -1048,6 +1128,7 @@ def page_capital():
 
 def page_connections():
     library = documents.library_status()
+    overview = market_overview()
     st.markdown("### Biblioteca de PDFs")
     st.markdown(f'<div class="tal-connection"><div><strong>{len(library)} arquivos encontrados</strong><small>Originais lidos somente localmente; contexto para IA exige autorização explícita por tarefa.</small></div><span class="tal-state">{sum(1 for item in library if item["status"] == "indexed")} atualizados</span></div>', unsafe_allow_html=True)
     if library:
@@ -1075,12 +1156,17 @@ def page_connections():
     st.code("TRADING_LAB_LLM_BASE_URL\nTRADING_LAB_LLM_MODEL\nTRADING_LAB_LLM_API_KEY (opcional para modelo local)", language="text")
     st.caption("A chamada só ocorre quando você inicia uma tarefa. Para incluir PDFs, o formulário exige autorização explícita de envio ao provedor configurado.")
     st.markdown("### Dados e plataforma")
-    for name, detail in [
-        ("Criptoativos", "Fonte de dados e cobertura ainda não escolhidas."),
-        ("Ações dos EUA", "Fonte de dados e cobertura ainda não escolhidas."),
-        ("XP Trader 5.0.4.34", "Integração não confirmada para esta licença e versão."),
-    ]:
-        st.markdown(f'<div class="tal-connection"><div><strong>{name}</strong><small>{detail}</small></div><span class="tal-state">Desconectado</span></div>', unsafe_allow_html=True)
+    source_rows = [
+        ("Binance Spot", "BTCUSDT/ETHUSDT · candles fechados de 1m; coletor separado",
+         f"{sum(item['state'] == 'atual' for item in overview['feeds'])} / 2 atuais"),
+        ("Alpaca IEX", "AAPL/MSFT · importação histórica sob ação explícita; sem streaming validado",
+         "Credenciais presentes" if overview["alpaca_configured"] else "Credenciais ausentes"),
+        ("Market History", "Amostras horárias históricas de ações",
+         f"{sum(item['source'] == 'Market History US consolidated' for item in overview['datasets'])} snapshots"),
+        ("XP Trader 5.0.4.34", "Licença, documentação e SDK ainda não confirmados", "Desconectado"),
+    ]
+    for name, detail, state in source_rows:
+        st.markdown(f'<div class="tal-connection"><div><strong>{esc(name)}</strong><small>{esc(detail)}</small></div><span class="tal-state">{esc(state)}</span></div>', unsafe_allow_html=True)
     st.markdown("""
     <div class="tal-source">A Nelogica descreve a ProfitDLL como produto licenciado separado para aplicações externas. A documentação pública consultada lista cobertura BM&amp;F/Bovespa; não confirma suporte à licença XP Trader 5.0.4.34 nem a criptoativos ou ações dos EUA. Consulte a <a href="https://ajuda.nelogica.com.br/hc/pt-br/articles/11166353435035-Introdu%C3%A7%C3%A3o-ao-Produto-DLL-Real-Time" target="_blank" rel="noopener">documentação oficial da ProfitDLL</a> e confirme a licença/SDK antes de integrar.
     </div>
@@ -1366,20 +1452,9 @@ def local_lab_main():
 def render_reference():
     source = Path(__file__).with_name("referencia.html")
     reference_html = source.read_text(encoding="utf-8")
-    from datetime import datetime, timezone
-    feed_snapshot = []
-    for feed in store.list_market_feeds():
-        last = store.get_market_bars(feed["provider"], feed["symbol"], feed["timeframe"], limit=1)
-        checked = datetime.fromisoformat(feed["checked_at"] + "+00:00")
-        bar_time = datetime.fromisoformat(feed["last_bar_at"].replace("Z", "+00:00")) if feed["last_bar_at"] else None
-        current = (feed["status"] == "connected" and
-                   (datetime.now(timezone.utc) - checked).total_seconds() < 120 and
-                   bar_time is not None and
-                   (datetime.now(timezone.utc) - bar_time).total_seconds() < 180)
-        feed_snapshot.append({"symbol": feed["symbol"], "provider": feed["provider"],
-                              "effective_status": "connected" if current else "atrasado ou desconectado",
-                              "last_bar_at": feed["last_bar_at"],
-                              "last_close": last[-1]["close"] if last else None})
+    overview = market_overview()
+    feed_snapshot = [{**item, "effective_status": "connected" if item["state"] == "atual" else item["state"]}
+                     for item in overview["feeds"]]
     strategies = {item["id"]: item for item in store.list_strategies()}
     backtest_snapshot = []
     for item in store.list_backtests()[:50]:
@@ -1401,6 +1476,9 @@ def render_reference():
         "events": store.list_events(limit=200),
         "connections": store.list_connections(),
         "market_feeds": feed_snapshot,
+        "historical_datasets": overview["datasets"],
+        "alpaca_configured": overview["alpaca_configured"],
+        "paper_operations": store.list_paper_operations()[:50],
         "backtests": backtest_snapshot,
     }
     payload = json.dumps(snapshot, ensure_ascii=False).replace("</", "<\\/")
