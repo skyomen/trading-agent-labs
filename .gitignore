@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+.pytest_cache/
+database/trading.db
+database/trading.db-*
+reference_docs/**/*.pdf
+_sandbox/
+.impeccable/review/
+trading-agent-labs-preview.html

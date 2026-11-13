@@ -1,0 +1,18 @@
+[theme]
+base = "dark"
+font = "sans serif"
+primaryColor = "#f0a43a"
+backgroundColor = "#131a24"
+secondaryBackgroundColor = "#19222f"
+textColor = "#e9eef4"
+borderColor = "#2a3648"
+
+[server]
+enableStaticServing = true
+
+[theme.dark]
+primaryColor = "#f0a43a"
+backgroundColor = "#131a24"
+secondaryBackgroundColor = "#19222f"
+textColor = "#e9eef4"
+borderColor = "#2a3648"
