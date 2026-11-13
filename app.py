@@ -41,7 +41,7 @@ function T(x,y,text,size,fill,extra){return '<text x="'+x+'" y="'+y+'" font-size
 function cortar(text,n){text=String(text);return text.length>n?text.slice(0,n-1)+"…":text;}
 function caja(u,v,du,dv,h,top,side1,side2){var a=P(u-du/2,v-dv/2),b=P(u+du/2,v-dv/2),c=P(u+du/2,v+dv/2),d=P(u-du/2,v+dv/2);return poly([b,c,sube(c,h),sube(b,h)],side2)+poly([d,c,sube(c,h),sube(d,h)],side1)+poly([sube(a,h),sube(b,h),sube(c,h),sube(d,h)],top);}
 function kpi(label,value){return '<div class="kpi"><small>'+label+'</small><strong>'+value+'</strong></div>';}
-var LOCAL = window.TAL_DATA || {agents:[], counts:{}, documents:[], events:[], connections:[], market_feeds:[]};
+var LOCAL = window.TAL_DATA || {agents:[], counts:{}, documents:[], events:[], connections:[], market_feeds:[], backtests:[]};
 function feedAtual(){return (LOCAL.market_feeds||[]).filter(function(f){return f.effective_status==="connected";});}
 function feedResumo(){var n=feedAtual().length;return n?n+" feed(s) cripto de candles fechados":"Sem feed de mercado atual";}
 var LOCAL_COLORS = ["#7fb4ff", "#5fd3d0", "#c99bff", "#e8c66a", "#ff9f6b", "#8fdcb0"];
@@ -228,7 +228,20 @@ function pintarFicha(){
   $("ficha").innerHTML='<div class="who"><div class="av">'+robot(a.color,34)+'</div><div><b>'+localText(a.nome)+'</b><span>'+localText(a.status)+'</span></div></div><div class="st"><small>Responsabilidade</small><b>'+localText(a.responsibility)+'</b></div>';
 }
 function pintarLab(){
-  $("labsvg").innerHTML=""; $("labtxt").innerHTML='<p class="local-message">Ainda não há backtests registrados no banco local. Não há desempenho ou assertividade a apresentar.</p>';
+  var results=LOCAL.backtests||[];
+  $("labsvg").innerHTML="";
+  if(!results.length){
+    $("labtxt").innerHTML='<p class="local-message">Ainda não há backtests registrados no banco local. Não há desempenho ou assertividade a apresentar.</p>';
+    return;
+  }
+  var setup=results.filter(function(r){return r.kind==="historical_simulation";});
+  var summary='<div class="local-band"><b>'+setup.length+' simulações de setups</b><span>'+results.length+' resultados recentes exibidos</span></div>';
+  var rows=results.map(function(r){
+    var label=r.setup_name? r.setup_name+' · '+r.symbol+' · '+r.timeframe : r.symbol+' · '+r.timeframe+' · estratégia #'+r.strategy_id;
+    var counts=r.kind==="historical_simulation"?r.signal_count+' sinais · '+r.trade_count+' operações simuladas':r.trade_count+' operações simuladas';
+    return '<div class="local-metric"><span><b>'+localText(label)+'</b><br>'+localText(counts)+' · '+localText(r.created_at)+'<br><small>Fonte: '+localText(r.source)+' · SHA-256 '+localText(r.sha256.slice(0,16))+'…</small></span></div>';
+  }).join("");
+  $("labtxt").innerHTML=summary+rows+'<p class="note">Resultados históricos simulados de snapshots locais. Custos e detalhes de cada execução estão no laboratório completo; o período curto não valida desempenho futuro. <a href="/?lab=1" target="_blank" rel="noopener">Abrir laboratório completo</a></p>';
 }
 function pintarEvolucion(){
   var font=window.innerWidth<500?32:17;
@@ -1367,6 +1380,20 @@ def render_reference():
                               "effective_status": "connected" if current else "atrasado ou desconectado",
                               "last_bar_at": feed["last_bar_at"],
                               "last_close": last[-1]["close"] if last else None})
+    strategies = {item["id"]: item for item in store.list_strategies()}
+    backtest_snapshot = []
+    for item in store.list_backtests()[:50]:
+        metrics = json.loads(item["metrics_json"])
+        strategy = strategies.get(item["strategy_id"])
+        rules = json.loads(strategy["rules_json"]) if strategy else {}
+        backtest_snapshot.append({
+            "id": item["id"], "strategy_id": item["strategy_id"],
+            "setup_name": rules.get("setup_name"), "kind": metrics.get("kind"),
+            "symbol": item["symbol"], "timeframe": item["timeframe"],
+            "source": item["data_source"], "sha256": item["data_sha256"],
+            "created_at": item["created_at"], "signal_count": metrics.get("signal_count", 0),
+            "trade_count": metrics.get("trade_count", 0),
+        })
     snapshot = {
         "agents": store.get_agents(),
         "counts": store.counts(),
@@ -1374,6 +1401,7 @@ def render_reference():
         "events": store.list_events(limit=200),
         "connections": store.list_connections(),
         "market_feeds": feed_snapshot,
+        "backtests": backtest_snapshot,
     }
     payload = json.dumps(snapshot, ensure_ascii=False).replace("</", "<\\/")
     reference_html = reference_html.replace('<html lang="es">', '<html lang="pt-BR">', 1)

@@ -80,6 +80,19 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('"paper_operations": 0', rendered)
         self.assertNotIn("Dinero ficticio", rendered)
 
+    def test_default_portal_embeds_persisted_backtest_summary(self):
+        rules = {"engine": "setup_pattern_v1", "setup_name": "VBS"}
+        strategy_id = store.save_strategy("VBS", rules, "PDF local", status="approved")
+        store.save_backtest(strategy_id, "BTCUSDT", "2m", "Binance Spot public", "abc123",
+                            {"kind": "historical_simulation", "signal_count": 4, "trade_count": 1})
+        app = AppTest.from_file(str(APP_PATH)).run()
+        self.assertFalse(app.exception, [item.message for item in app.exception])
+        rendered = app.get("iframe")[0].proto.srcdoc
+        self.assertIn('"setup_name": "VBS"', rendered)
+        self.assertIn('"signal_count": 4', rendered)
+        self.assertIn('"trade_count": 1', rendered)
+        self.assertIn("Abrir laboratório completo", rendered)
+
     def test_local_lab_dashboard_uses_real_persisted_state(self):
         app = app_for_local_lab().run()
 
