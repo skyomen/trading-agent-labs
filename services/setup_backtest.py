@@ -10,6 +10,9 @@ from services import datasets, documents
 from services.setup_signals import signal_at
 
 ENGINE_VERSION = "setup_backtest_v1"
+# Bars consumed before the first possible signal: `signal_at` only reads a
+# completed window from index 28 onwards and the order lives on the next bar.
+WARMUP_BARS = 29
 
 
 def aggregate_minutes(bars, minutes):
@@ -96,7 +99,7 @@ def simulate(bars, rules, tick_size, fee_bps, slippage_bps):
                         position["stop"] = candidate
                         position["trailing_updates"] += 1
                         trailing_updates += 1
-        if occupied_at_open or position or i - segment_start < 29 or i == len(bars) - 1:
+        if occupied_at_open or position or i - segment_start < WARMUP_BARS or i == len(bars) - 1:
             continue
         # The signal is evaluated on i-1; order lives only on i. No prior signal
         # is evaluated across an absent aggregate bar.
@@ -135,8 +138,8 @@ def simulate(bars, rules, tick_size, fee_bps, slippage_bps):
             "trailing_updates": trailing_updates, "trades": trades}
 
 
-def run_approved(strategy, dataset_id, timeframe, fee_bps=10.0, slippage_bps=5.0,
-                 confirm_zero_costs=False):
+def verify_approved_rules(strategy, timeframe):
+    """Refuse anything but a human-approved setup version on a supported interval."""
     if strategy["status"] != "approved":
         raise ValueError("A estratégia precisa estar aprovada.")
     rules = json.loads(strategy["rules_json"])
@@ -144,8 +147,18 @@ def run_approved(strategy, dataset_id, timeframe, fee_bps=10.0, slippage_bps=5.0
         raise ValueError("A versão não contém regras de setup aprovadas.")
     if timeframe not in rules["timeframes"] or timeframe not in {"2m", "5m"}:
         raise ValueError("Intervalo incompatível com as regras aprovadas.")
-    if (fee_bps == 0 or slippage_bps == 0) and not confirm_zero_costs:
-        raise ValueError("Custo zero exige confirmação explícita.")
+    return {**rules, "tested_timeframe": timeframe}
+
+
+def prepare_verified_run(strategy, dataset_id, timeframe, rules=None):
+    """Single provenance gate shared by every engine that reads approved setups.
+
+    Confirms the source PDFs are still indexed with the approved hash, restores
+    the dataset through its canonical hash and rejects anything that is not a
+    verified Binance Spot 1m crypto snapshot. Returns the source 1m bars so the
+    caller decides how to aggregate or split them; no simulation happens here.
+    """
+    rules = rules or verify_approved_rules(strategy, timeframe)
     current = {item["path"]: item for item in documents.library_status()}
     for source in rules["source"]:
         entry = current.get(source["path"], {})
@@ -158,25 +171,39 @@ def run_approved(strategy, dataset_id, timeframe, fee_bps=10.0, slippage_bps=5.0
     if (row["symbol"] not in {"BTCUSDT", "ETHUSDT"} or metadata.get("quote_currency") != "USDT"
             or metadata.get("provider") != "Binance Spot public"):
         raise ValueError("Fonte/símbolo incompatível com esta execução de setup.")
-    tick_size = float(metadata["tick_size"])
-    bars, coverage = aggregate_minutes(restored["bars"], int(timeframe[:-1]))
-    if not bars:
-        raise ValueError("Nenhuma barra agregada completa.")
-    tested_rules = {**rules, "tested_timeframe": timeframe}
-    metrics = simulate(bars, tested_rules, tick_size, fee_bps, slippage_bps)
     rule_hash = hashlib.sha256(strategy["rules_json"].encode("utf-8")).hexdigest()
-    return {"kind": "historical_simulation", "engine_version": ENGINE_VERSION,
+    return {
+        "rules": rules, "tick_size": float(metadata["tick_size"]),
+        "source_bars": restored["bars"],
+        "provenance": {
             "strategy_id": strategy["id"], "strategy_version": strategy["version"],
             "rule_sha256": rule_hash, "source_pdfs": rules["source"],
             "dataset_id": dataset_id, "file_sha256": row["sha256"],
             "canonical_sha256": row["canonical_sha256"], "source": row["source"],
             "symbol": row["symbol"], "market": metadata["market"],
             "source_timeframe": "1m", "timeframe": timeframe,
+            "source_bar_count": len(restored["bars"]),
+            "filters": {"market": "crypto", "provider": "Binance Spot public",
+                        "source_timeframe": "1m", "complete_utc_blocks_only": True},
+        },
+    }
+
+
+def run_approved(strategy, dataset_id, timeframe, fee_bps=10.0, slippage_bps=5.0,
+                 confirm_zero_costs=False):
+    rules = verify_approved_rules(strategy, timeframe)
+    if (fee_bps == 0 or slippage_bps == 0) and not confirm_zero_costs:
+        raise ValueError("Custo zero exige confirmação explícita.")
+    prepared = prepare_verified_run(strategy, dataset_id, timeframe, rules)
+    bars, coverage = aggregate_minutes(prepared["source_bars"], int(timeframe[:-1]))
+    if not bars:
+        raise ValueError("Nenhuma barra agregada completa.")
+    metrics = simulate(bars, prepared["rules"], prepared["tick_size"], fee_bps, slippage_bps)
+    return {"kind": "historical_simulation", "engine_version": ENGINE_VERSION,
+            **prepared["provenance"],
             "start_utc": bars[0]["timestamp"], "end_utc": bars[-1]["timestamp"],
-            "source_bar_count": len(restored["bars"]), "aggregated_bar_count": len(bars),
+            "aggregated_bar_count": len(bars),
             "coverage": coverage, "fee_bps_per_side": fee_bps,
             "slippage_bps_per_side": slippage_bps,
             "cost_scenario": "zero_confirmed" if fee_bps == slippage_bps == 0 else "user_supplied_assumption",
-            "filters": {"market": "crypto", "provider": "Binance Spot public",
-                        "source_timeframe": "1m", "complete_utc_blocks_only": True},
             **metrics}

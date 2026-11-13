@@ -155,6 +155,25 @@ def initialize():
             )
         """)
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS validation_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                strategy_id INTEGER REFERENCES strategies(id),
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                dataset_id INTEGER,
+                data_sha256 TEXT NOT NULL,
+                engine_version TEXT NOT NULL,
+                holdout_fraction REAL NOT NULL,
+                split_json TEXT NOT NULL DEFAULT '{}',
+                cost_grid_json TEXT NOT NULL DEFAULT '{}',
+                concentration_json TEXT NOT NULL DEFAULT '{}',
+                report_json TEXT NOT NULL DEFAULT '{}',
+                sample_adequacy TEXT NOT NULL
+                    CHECK(sample_adequacy IN ('insuficiente','limitrofe','adequada')),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS historical_datasets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 filename TEXT NOT NULL,
@@ -283,7 +302,7 @@ def list_events(limit=100):
 def counts():
     tables = ("agents", "events", "documents", "agent_runs", "agent_memories",
               "agent_reviews", "strategies", "backtests", "historical_datasets",
-              "paper_operations", "knowledge_items")
+              "paper_operations", "knowledge_items", "validation_runs")
     with connect() as conn:
         return {table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                 for table in tables}
@@ -645,6 +664,40 @@ def save_backtest(strategy_id, symbol, timeframe, data_source, data_sha256, metr
             VALUES(?,?,?,?,?,?, 'completed')
         """, (strategy_id, symbol, timeframe, data_source, data_sha256, metrics_json))
         return cur.lastrowid
+
+
+def save_validation_run(strategy_id, symbol, timeframe, dataset_id, data_sha256, report):
+    """Persist one validation reading; `report` is the full dict from the engine.
+
+    `report_json` keeps the reproducible record whole; `split_json`,
+    `cost_grid_json`, `concentration_json` and `sample_adequacy` are the
+    queryable projections used by the interface.
+    """
+    missing = sorted(key for key in ("engine_version", "holdout_fraction", "split",
+                                     "cost_grid", "concentration", "sample_adequacy")
+                     if key not in report)
+    if missing:
+        raise ValueError("Relatório de validação incompleto: " + ", ".join(missing))
+    dump = lambda value: json.dumps(value, ensure_ascii=False, sort_keys=True)
+    with connect() as conn:
+        cur = conn.execute("""
+            INSERT INTO validation_runs(strategy_id,symbol,timeframe,dataset_id,data_sha256,
+                engine_version,holdout_fraction,split_json,cost_grid_json,concentration_json,
+                report_json,sample_adequacy)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (strategy_id, symbol, timeframe, dataset_id, data_sha256,
+              report["engine_version"], float(report["holdout_fraction"]),
+              dump(report["split"]), dump(report["cost_grid"]),
+              dump(report["concentration"]), dump(report),
+              report["sample_adequacy"]))
+        return cur.lastrowid
+
+
+def list_validation_runs(limit=50):
+    with connect() as conn:
+        return [dict(row) for row in conn.execute(
+            "SELECT * FROM validation_runs ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()]
 
 
 def list_paper_operations():

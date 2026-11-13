@@ -1,20 +1,56 @@
+import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 from streamlit.testing.v1 import AppTest
 
 from database import store
+from services import datasets as dataset_service
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
 REFERENCE_PATH = APP_PATH.with_name("referencia.html")
+
+SOURCE_PDF = "reference_docs/shared/fixture.pdf"
+INDEXED_LIBRARY = [{"path": SOURCE_PDF, "status": "indexed",
+                    "record": {"sha256": "fixture-pdf-hash"}}]
 
 
 def app_for_local_lab():
     app = AppTest.from_file(str(APP_PATH))
     app.query_params["lab"] = "1"
     return app
+
+
+def approved_setup_strategy():
+    """An approved setup version bound to an indexed fixture PDF."""
+    rules = {"engine": "setup_pattern_v1", "setup_id": "SETUP_03", "setup_name": "BOP",
+             "side": "buy", "timeframes": ["2m"], "approval": "rules_human_approved",
+             "pattern": {"kind": "compressed_base", "min_bars": 3, "max_bars": 8,
+                         "max_range_atr20": 1.5, "trend_ma": 8, "trend_slope_bars": 3},
+             "source": [{"path": SOURCE_PDF, "sha256": "fixture-pdf-hash", "pages": [1]}]}
+    strategy_id = store.save_strategy("BOP · fixture", rules, "PDF local")
+    store.approve_strategy(strategy_id)
+    return next(row for row in store.list_strategies() if row["id"] == strategy_id)
+
+
+def verified_crypto_dataset(count=400):
+    """A flat Binance-shaped 1m snapshot: verifiable, and it produces no signal."""
+    origin = datetime(2026, 11, 12, 20, 0, tzinfo=timezone.utc)
+    bars = [{"timestamp": (origin + timedelta(minutes=i)).isoformat(),
+             "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 5.0}
+            for i in range(count)]
+    metadata = {"symbol": "BTCUSDT", "market": "crypto", "provider": "Binance Spot public",
+                "timeframe": "1m", "timezone": "UTC", "quote_currency": "USDT",
+                "tick_size": "0.01", "volume_unit": "BTC", "license_note": "fixture",
+                "start_utc": bars[0]["timestamp"], "end_utc": bars[-1]["timestamp"],
+                "row_count": len(bars), "gap_count": 0, "gap_examples": []}
+    dataset_id = store.save_historical_dataset(
+        "btc-fixture.csv", "BTCUSDT", "1m", "Binance Spot public", "fixture-file-hash",
+        bars, metadata=metadata, canonical_sha256=dataset_service.canonical_digest(bars))
+    return next(row for row in store.list_historical_datasets() if row["id"] == dataset_id)
 
 
 class DashboardTests(unittest.TestCase):
@@ -215,6 +251,77 @@ class DashboardTests(unittest.TestCase):
         reviewed = next(item for item in store.list_knowledge_items() if item["id"] == item_id)
         self.assertEqual(reviewed["status"], "approved")
         self.assertEqual(reviewed["reviewed_by"], "Usuário")
+
+    def test_validation_section_runs_a_split_and_persists_the_labelled_sample(self):
+        strategy = approved_setup_strategy()
+        verified_crypto_dataset()
+        app = app_for_local_lab()
+        app.session_state["tal-view"] = "Laboratório"
+        with patch("services.setup_backtest.documents.library_status", return_value=INDEXED_LIBRARY):
+            app.run()
+            self.assertFalse(app.exception, [item.message for item in app.exception])
+            self.assertIn("Validation Engine · treino e out-of-sample",
+                          "\n".join(str(item.value) for item in app.markdown))
+            run_button = next(button for button in app.button
+                              if button.key == f"run-validation-{strategy['id']}")
+            self.assertEqual(run_button.label, "Rodar validação")
+            run_button.click().run()
+            self.assertFalse(app.exception, [item.message for item in app.exception])
+
+        runs = store.list_validation_runs()
+        self.assertEqual(len(runs), 1)
+        row = runs[0]
+        self.assertEqual((row["symbol"], row["timeframe"], row["strategy_id"]),
+                         ("BTCUSDT", "2m", strategy["id"]))
+        self.assertEqual(row["engine_version"], "validation_engine_v1")
+        self.assertEqual(row["sample_adequacy"], "insuficiente")
+        split = json.loads(row["split_json"])
+        self.assertLess(split["train_end_utc"], split["holdout_start_utc"])
+        self.assertEqual(split["order"], "chronological_no_shuffle")
+        self.assertEqual(len(json.loads(row["cost_grid_json"])["holdout"]["scenarios"]), 4)
+        self.assertIn("concentração", json.loads(row["concentration_json"])["train"]["note"])
+        self.assertTrue(any("AMOSTRA INSUFICIENTE" in str(item.value) for item in app.error))
+
+    def test_default_portal_embeds_validation_summary_without_leaking_secrets(self):
+        strategy = approved_setup_strategy()
+        dataset = verified_crypto_dataset()
+        with patch("services.setup_backtest.documents.library_status", return_value=INDEXED_LIBRARY):
+            from services.validation import evaluate_validation
+            report = evaluate_validation(strategy, dataset["id"], "2m")
+        store.save_validation_run(strategy["id"], "BTCUSDT", "2m", dataset["id"],
+                                  dataset["sha256"], report)
+        with patch.dict("os.environ", {"ALPACA_API_KEY": "test-key", "ALPACA_API_SECRET": "test-secret"}):
+            portal = AppTest.from_file(str(APP_PATH)).run()
+
+        self.assertFalse(portal.exception, [item.message for item in portal.exception])
+        rendered = portal.get("iframe")[0].proto.srcdoc
+        self.assertIn('"validation_runs"', rendered)
+        self.assertIn('"sample_adequacy": "insuficiente"', rendered)
+        self.assertIn('"engine_version": "validation_engine_v1"', rendered)
+        self.assertIn('"setup_name": "BOP"', rendered)
+        self.assertIn('"validation_runs": 1', rendered)
+        self.assertIn("Validações com amostra insuficiente", rendered)
+        self.assertIn("function blocoValidacao()", rendered)
+        self.assertIn("amostra insuficiente", rendered)
+        self.assertNotIn("test-secret", rendered)
+        self.assertNotIn("test-key", rendered)
+        self.assertNotIn("ALPACA_API_SECRET", rendered)
+
+    def test_reports_panel_counts_validations_and_insufficient_samples(self):
+        strategy = approved_setup_strategy()
+        dataset = verified_crypto_dataset()
+        with patch("services.setup_backtest.documents.library_status", return_value=INDEXED_LIBRARY):
+            from services.validation import evaluate_validation
+            report = evaluate_validation(strategy, dataset["id"], "2m")
+        store.save_validation_run(strategy["id"], "BTCUSDT", "2m", dataset["id"],
+                                  dataset["sha256"], report)
+        app = app_for_local_lab()
+        app.session_state["tal-nav"] = "Informe"
+        app.run()
+
+        self.assertFalse(app.exception, [item.message for item in app.exception])
+        written = "\n".join(str(item.value) for item in app.markdown)
+        self.assertIn("1 validações executadas, 1 com amostra insuficiente", written)
 
     def test_approved_setup_is_visible_without_sma_backtest_action(self):
         rules = {"engine": "setup_pattern_v1", "setup_id": "SETUP_01",

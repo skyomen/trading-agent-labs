@@ -1555,6 +1555,16 @@ Executar stress tests.
 
 Nenhuma estratégia é promovida apenas por resultado bruto.
 
+### Registro de execução em 13/11/2026
+
+Entrega concluída no código. `services/validation.py` separa desenvolvimento e out-of-sample por corte temporal causal, roda uma grade fixa de custo nos dois lados, mede concentração removendo a melhor operação e rotula a adequação da amostra. O portão de proveniência do backtest foi extraído para `verify_approved_rules` e `prepare_verified_run` em `services/setup_backtest.py` e é reaproveitado sem duplicação: versão não aprovada, PDF alterado ou dataset fora do padrão cripto 1m verificado são recusados na validação como no backtest. A série nunca é embaralhada, o corte recua até um bloco UTC completo e cada lado paga seu próprio aquecimento de 29 barras, de modo que nenhuma barra de treino alimenta um sinal out-of-sample.
+
+O critério de aceite é cumprido pela via do rótulo, não da promoção: o resultado traz `promotes_strategy: false` e um veredito que nunca afirma robustez. Menos de 10 operações no pior lado é `insuficiente` e não gera leitura alguma; de 10 a 29 é `limitrofe` e gera leitura apenas indicativa; a partir de 30 é `adequada` e apenas habilita a leitura, sujeita aos sinais de fragilidade. Os dois limiares são decisão de projeto aprovada pelo usuário, registrada em cada execução ao lado do resultado. `validation_runs` guarda as projeções consultáveis e o registro completo com hashes e janela de datas; os dois modos de portal mostram contagem, rótulo e sinais de fragilidade, com o retorno líquido nunca isolado como veredito.
+
+Provas: `python main.py test` passou com 70 testes, incluindo `tests/test_validation.py` (corte sem vazamento do futuro, monotonicidade da grade de custo, detecção de trade dominante, limiares em 10 e 30) e os novos casos `AppTest`. `python -m scripts.run_delivery6` executou as 16 combinações de quatro setups, dois pares e dois intervalos com fração out-of-sample de 0,30; a segunda execução não duplicou registros. `python -m scripts.run_delivery5` recomparou os 16 backtests da Entrega 5 com os relatórios persistidos e não acusou divergência, provando que o refactor preservou o histórico. `python scripts/check_portal_state.py` confirmou a seção de validação nos dois modos de portal em 1440×1000, 390×844 e 320×740, sem erro de JavaScript e sem rolagem horizontal.
+
+Limitação conhecida: com cerca de 16h38 de candles por par, as 16 combinações ficaram todas rotuladas como `insuficiente`. Esse é o resultado correto e esperado desta amostra, não uma falha do motor. "Comparar períodos" e "procurar degradação", desta seção e da seção 10, ficaram explicitamente fora do escopo por exigirem várias janelas longas e independentes que o histórico atual não oferece; a pendência está registrada em cada execução no campo `out_of_scope` e em `PROJECT_DOCUMENTATION.md`.
+
 ---
 
 # 49. ENTREGA 7 — AGENT ORCHESTRATION

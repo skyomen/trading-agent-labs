@@ -23,6 +23,12 @@ from services import market_data
 from services.agents import provider_summary, run_agent_task
 from services.backtest import parse_ohlcv_csv, run_sma_crossover
 from services.setup_backtest import run_approved as run_approved_setup
+from services.validation import (ADEQUACY_GOOD_TRADES, ADEQUACY_MIN_TRADES,
+                                 evaluate_validation)
+
+ADEQUACY_TEXT = {"insuficiente": "amostra insuficiente",
+                 "limitrofe": "amostra limítrofe",
+                 "adequada": "amostra adequada"}
 
 
 LOCAL_PORTAL_SCRIPT = r'''
@@ -41,7 +47,11 @@ function T(x,y,text,size,fill,extra){return '<text x="'+x+'" y="'+y+'" font-size
 function cortar(text,n){text=String(text);return text.length>n?text.slice(0,n-1)+"…":text;}
 function caja(u,v,du,dv,h,top,side1,side2){var a=P(u-du/2,v-dv/2),b=P(u+du/2,v-dv/2),c=P(u+du/2,v+dv/2),d=P(u-du/2,v+dv/2);return poly([b,c,sube(c,h),sube(b,h)],side2)+poly([d,c,sube(c,h),sube(d,h)],side1)+poly([sube(a,h),sube(b,h),sube(c,h),sube(d,h)],top);}
 function kpi(label,value){return '<div class="kpi"><small>'+label+'</small><strong>'+value+'</strong></div>';}
-var LOCAL = window.TAL_DATA || {agents:[], counts:{}, documents:[], events:[], connections:[], market_feeds:[], historical_datasets:[], paper_operations:[], backtests:[]};
+var LOCAL = window.TAL_DATA || {agents:[], counts:{}, documents:[], events:[], connections:[], market_feeds:[], historical_datasets:[], paper_operations:[], backtests:[], validation_runs:[]};
+var ADEQUACY_TEXT = {insuficiente:"amostra insuficiente", limitrofe:"amostra limítrofe", adequada:"amostra adequada"};
+function localAdequacy(value){ return ADEQUACY_TEXT[String(value||"")] || "amostra não rotulada"; }
+function validacoes(){ return LOCAL.validation_runs || []; }
+function validacoesInsuficientes(){ return validacoes().filter(function(v){return v.sample_adequacy==="insuficiente";}).length; }
 function feedAtual(){return (LOCAL.market_feeds||[]).filter(function(f){return f.effective_status==="connected";});}
 function feedResumo(){var n=feedAtual().length;return n?n+" feed(s) cripto de candles fechados":"Sem feed de mercado atual";}
 var LOCAL_COLORS = ["#7fb4ff", "#5fd3d0", "#c99bff", "#e8c66a", "#ff9f6b", "#8fdcb0"];
@@ -52,7 +62,7 @@ function localDocumentStatus(value){return ({indexed:"indexado",stale:"desatuali
 function localConnectionStatus(value){return ({not_configured:"não configurado",disconnected:"desconectado",connected:"conectado",error:"erro"})[String(value||"").toLowerCase()]||value||"estado não informado";}
 function localInjectStyles(){
   var style = document.createElement("style");
-  style.textContent = "html{overflow-x:hidden!important;overflow-y:auto!important;scrollbar-gutter:stable;overscroll-behavior-y:contain}body{overflow:visible!important;min-width:0!important;width:100%;max-width:100%;padding-bottom:0!important}.pane{overflow:visible!important;flex:0 0 auto!important;min-width:0!important}.side{height:auto!important;align-self:stretch;min-width:0!important}.layout,.stage{min-width:0!important;max-width:100%!important;overflow:visible!important}.row{grid-template-columns:40px minmax(0,1fr)!important}.row .spark,.row .res{display:none!important}.tag.off{color:var(--amber)!important}.pill.warn{background:var(--panel);color:var(--amber);border-color:var(--amber)}.salaw{width:calc(100% - 24px)!important;max-width:calc(100% - 24px)!important;margin-left:12px!important;margin-right:12px!important;overflow:hidden!important}.salaw::after{display:none!important}#floor{display:block;width:100%!important;min-width:0!important;max-width:100%!important;height:auto!important;max-height:none!important;overflow:hidden;object-fit:contain}@media(max-width:760px){#floor{height:auto!important}}.local-empty{padding:12px 14px;color:var(--mute);line-height:1.55}.local-room-label{font-size:11px;fill:#aab8c8;letter-spacing:.06em}.local-divider{stroke:#526078;stroke-width:2;stroke-dasharray:7 7}.local-message{color:var(--mute);font-size:12px;line-height:1.55;padding:10px 14px}.local-status{display:inline-flex;align-items:center;gap:7px}.local-status:before{content:'';width:7px;height:7px;border-radius:50%;background:#f0a43a}.local-status.trab:before{background:#42d392}.local-activity{overflow-wrap:anywhere}.local-controls{display:flex;gap:8px;flex-wrap:wrap;padding:8px 14px}.local-metric{padding:10px 14px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:12px}.local-metric span{color:var(--mute)}.local-band{display:flex;gap:12px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid var(--line)}@media(max-width:860px){.layout{min-height:0;grid-template-columns:minmax(0,1fr)!important}.side{order:2}.stage{order:1}.pane{max-height:none!important}.local-band{display:grid;grid-template-columns:1fr}}@media(max-width:760px){body{padding-bottom:66px!important}.tabs{overflow:hidden!important;justify-content:space-between!important;flex-wrap:nowrap!important;gap:0!important;padding-left:3px!important;padding-right:3px!important}.tab{white-space:nowrap;min-width:0!important;flex:1 1 0!important;padding-left:3px!important;padding-right:3px!important;font-size:11px!important}.layout{min-height:0}.salaw{margin-top:8px!important}}";
+  style.textContent = "html{overflow-x:hidden!important;overflow-y:auto!important;scrollbar-gutter:stable;overscroll-behavior-y:contain}body{overflow:visible!important;min-width:0!important;width:100%;max-width:100%;padding-bottom:0!important}.pane{overflow:visible!important;flex:0 0 auto!important;min-width:0!important}.side{height:auto!important;align-self:stretch;min-width:0!important}.layout,.stage{min-width:0!important;max-width:100%!important;overflow:visible!important}.row{grid-template-columns:40px minmax(0,1fr)!important}.row .spark,.row .res{display:none!important}.tag.off{color:var(--amber)!important}.pill.warn{background:var(--panel);color:var(--amber);border-color:var(--amber)}.salaw{width:calc(100% - 24px)!important;max-width:calc(100% - 24px)!important;margin-left:12px!important;margin-right:12px!important;overflow:hidden!important}.salaw::after{display:none!important}#floor{display:block;width:100%!important;min-width:0!important;max-width:100%!important;height:auto!important;max-height:none!important;overflow:hidden;object-fit:contain}@media(max-width:760px){#floor{height:auto!important}}.local-empty{padding:12px 14px;color:var(--mute);line-height:1.55}.local-room-label{font-size:11px;fill:#aab8c8;letter-spacing:.06em}.local-divider{stroke:#526078;stroke-width:2;stroke-dasharray:7 7}.local-message{color:var(--mute);font-size:12px;line-height:1.55;padding:10px 14px}.local-status{display:inline-flex;align-items:center;gap:7px}.local-status:before{content:'';width:7px;height:7px;border-radius:50%;background:#f0a43a}.local-status.trab:before{background:#42d392}.local-activity{overflow-wrap:anywhere}.local-controls{display:flex;gap:8px;flex-wrap:wrap;padding:8px 14px}.local-metric{padding:10px 14px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:12px}.local-metric span{color:var(--mute)}.local-band{display:flex;gap:12px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid var(--line)}.local-flag{margin:0;padding:10px 14px;color:#f0a43a;font-size:12px;line-height:1.55;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.local-flag-inline{color:#f0a43a;font-style:normal;font-weight:700;font-size:11px}.local-ok{color:#42d392;font-style:normal;font-weight:700;font-size:11px}@media(max-width:860px){.layout{min-height:0;grid-template-columns:minmax(0,1fr)!important}.side{order:2}.stage{order:1}.pane{max-height:none!important}.local-band{display:grid;grid-template-columns:1fr}}@media(max-width:760px){body{padding-bottom:66px!important}.tabs{overflow:hidden!important;justify-content:space-between!important;flex-wrap:nowrap!important;gap:0!important;padding-left:3px!important;padding-right:3px!important}.tab{white-space:nowrap;min-width:0!important;flex:1 1 0!important;padding-left:3px!important;padding-right:3px!important;font-size:11px!important}.layout{min-height:0}.salaw{margin-top:8px!important}}";
   document.head.appendChild(style);
 }
 function localFormatTime(value){
@@ -92,8 +102,10 @@ function pintarInforme(){
   $("p-inf").innerHTML='<div class="sec">Estado do laboratório</div>'+[
     ["Agentes cadastrados",c.agents||0],["Tarefas de agentes executadas",c.agent_runs||0],["Documentos indexados",docs],
     ["Estratégias registradas",c.strategies||0],["Backtests registrados",c.backtests||0],["Snapshots históricos",c.historical_datasets||0],
-    ["Feeds cripto atuais",current],["Operações simuladas",c.paper_operations||0]
+    ["Feeds cripto atuais",current],["Operações simuladas",c.paper_operations||0],
+    ["Validações executadas",validacoes().length],["Validações com amostra insuficiente",validacoesInsuficientes()]
   ].map(function(x){return '<div class="local-metric"><span>'+localText(x[0])+'</span><b>'+x[1]+'</b></div>';}).join("")+
+  (validacoes().length?'<p class="local-flag">'+validacoesInsuficientes()+' de '+validacoes().length+' validações estão rotuladas como amostra insuficiente: sem conclusão de robustez ou lucratividade.</p>':'')+
   '<p class="note">Contagens do SQLite local. Alpaca IEX: '+(LOCAL.alpaca_configured?'credenciais presentes; importação histórica manual':'credenciais ausentes')+'. Backtests não são operações; agentes só executam tarefas iniciadas pelo usuário.</p>';
 }
 function pintarControl(){
@@ -232,11 +244,30 @@ function pintarFicha(){
   var a=D.agentes[SEL];if(!a)return;
   $("ficha").innerHTML='<div class="who"><div class="av">'+robot(a.color,34)+'</div><div><b>'+localText(a.nome)+'</b><span>'+localText(a.status)+'</span></div></div><div class="st"><small>Responsabilidade</small><b>'+localText(a.responsibility)+'</b></div>';
 }
+function blocoValidacao(){
+  var runs=validacoes();
+  if(!runs.length) return '<div class="sec">Validação de setups</div><p class="local-empty">Nenhuma validação registrada. O Validation Engine separa treino e out-of-sample, varia custos e mede concentração antes de qualquer leitura.</p>';
+  var insuficientes=validacoesInsuficientes();
+  var head='<div class="sec">Validação de setups</div><div class="local-band"><b>'+runs.length+' validações executadas</b><span>'+insuficientes+' com amostra insuficiente</span></div>';
+  var alerta=insuficientes?'<p class="local-flag">Amostra insuficiente em '+insuficientes+' de '+runs.length+' validações: menos de 10 operações no pior lado do corte. Nenhuma conclusão de robustez ou lucratividade é possível.</p>':'';
+  var rows=runs.map(function(v){
+    var label=(v.setup_name?v.setup_name+' · ':'')+v.symbol+' · '+v.timeframe;
+    var flags=[];
+    if(v.sign_flips_with_cost)flags.push("o sinal do retorno muda com o custo");
+    if(v.sign_flips_without_best_trade)flags.push("remover a melhor operação inverte o sinal");
+    var tag=v.sample_adequacy==="adequada"?'local-ok':'local-flag-inline';
+    return '<div class="local-metric"><span><b>'+localText(label)+'</b> <em class="'+tag+'">'+localText(localAdequacy(v.sample_adequacy))+'</em><br>'+
+      'treino '+localText(v.train_trade_count)+' operações · out-of-sample '+localText(v.holdout_trade_count)+' operações · corte em '+localText(v.cut_utc||'não registrado')+' UTC<br>'+
+      '<small>'+localText(v.engine_version)+' · fração out-of-sample '+localText(v.holdout_fraction)+(flags.length?' · '+localText(flags.join("; ")):'')+'</small></span></div>';
+  }).join("");
+  return head+alerta+rows;
+}
 function pintarLab(){
   var results=LOCAL.backtests||[];
   $("labsvg").innerHTML="";
+  var nota='<p class="note">Resultados históricos simulados de snapshots locais. Custos e detalhes de cada execução estão no laboratório completo; o período curto não valida desempenho futuro. <a href="/?lab=1" target="_blank" rel="noopener">Abrir laboratório completo</a></p>';
   if(!results.length){
-    $("labtxt").innerHTML='<p class="local-message">Ainda não há backtests registrados no banco local. Não há desempenho ou assertividade a apresentar.</p>';
+    $("labtxt").innerHTML='<p class="local-message">Ainda não há backtests registrados no banco local. Não há desempenho ou assertividade a apresentar.</p>'+blocoValidacao()+nota;
     return;
   }
   var setup=results.filter(function(r){return r.kind==="historical_simulation";});
@@ -246,7 +277,7 @@ function pintarLab(){
     var counts=r.kind==="historical_simulation"?r.signal_count+' sinais · '+r.trade_count+' operações simuladas':r.trade_count+' operações simuladas';
     return '<div class="local-metric"><span><b>'+localText(label)+'</b><br>'+localText(counts)+' · '+localText(r.created_at)+'<br><small>Fonte: '+localText(r.source)+' · SHA-256 '+localText(r.sha256.slice(0,16))+'…</small></span></div>';
   }).join("");
-  $("labtxt").innerHTML=summary+rows+'<p class="note">Resultados históricos simulados de snapshots locais. Custos e detalhes de cada execução estão no laboratório completo; o período curto não valida desempenho futuro. <a href="/?lab=1" target="_blank" rel="noopener">Abrir laboratório completo</a></p>';
+  $("labtxt").innerHTML=summary+rows+blocoValidacao()+nota;
 }
 function pintarEvolucion(){
   var font=window.innerWidth<500?32:17;
@@ -1072,11 +1103,16 @@ def page_reports(counts):
     st.markdown("#### Síntese do diretor")
     overview = market_overview()
     current = sum(item["state"] == "atual" for item in overview["feeds"])
+    validations = store.list_validation_runs(limit=1000)
+    insufficient = sum(item["sample_adequacy"] == "insuficiente" for item in validations)
+    borderline = sum(item["sample_adequacy"] == "limitrofe" for item in validations)
     st.write(f"{counts['historical_datasets']} snapshots históricos e {counts['backtests']} backtests persistidos; "
              f"{current} feeds de candles fechados atuais. "
+             f"{len(validations)} validações executadas, {insufficient} com amostra insuficiente e {borderline} limítrofe. "
              f"Alpaca IEX: {'credenciais locais presentes' if overview['alpaca_configured'] else 'credenciais ausentes'}. "
              "Os seis agentes só executam tarefas mediante ação explícita. XP Trader e ordens reais permanecem desconectados/bloqueados.")
-    st.caption("Backtests são simulações históricas; não são operações de conta nem saldo. Amostras de ações IEX não constituem feed em tempo real.")
+    st.caption("Backtests são simulações históricas; não são operações de conta nem saldo. Amostras de ações IEX não constituem feed em tempo real. "
+               "Validação com amostra insuficiente não autoriza nenhuma leitura de robustez ou lucratividade.")
     runs = store.list_agent_runs(limit=20)
     if runs:
         st.markdown("#### Resultados registrados")
@@ -1171,6 +1207,137 @@ def page_connections():
     <div class="tal-source">A Nelogica descreve a ProfitDLL como produto licenciado separado para aplicações externas. A documentação pública consultada lista cobertura BM&amp;F/Bovespa; não confirma suporte à licença XP Trader 5.0.4.34 nem a criptoativos ou ações dos EUA. Consulte a <a href="https://ajuda.nelogica.com.br/hc/pt-br/articles/11166353435035-Introdu%C3%A7%C3%A3o-ao-Produto-DLL-Real-Time" target="_blank" rel="noopener">documentação oficial da ProfitDLL</a> e confirme a licença/SDK antes de integrar.
     </div>
     """, unsafe_allow_html=True)
+
+
+def adequacy_banner(label, by_side):
+    """State the sample verdict before any return is shown."""
+    detail = (f"treino {ADEQUACY_TEXT[by_side['train']]}, out-of-sample {ADEQUACY_TEXT[by_side['holdout']]}"
+              if by_side else "")
+    if label == "insuficiente":
+        st.error(f"AMOSTRA INSUFICIENTE — {detail}. Menos de {ADEQUACY_MIN_TRADES} operações no pior lado: "
+                 "nenhuma conclusão de robustez ou lucratividade é possível. Os números abaixo descrevem "
+                 "o histórico curto, não desempenho esperado.")
+    elif label == "limitrofe":
+        st.warning(f"AMOSTRA LIMÍTROFE — {detail}. Entre {ADEQUACY_MIN_TRADES} e {ADEQUACY_GOOD_TRADES - 1} "
+                   "operações no pior lado: leitura apenas indicativa, não promove a estratégia.")
+    else:
+        st.success(f"AMOSTRA ADEQUADA — {detail}. Ao menos {ADEQUACY_GOOD_TRADES} operações no pior lado. "
+                   "Isso habilita a leitura; a decisão continua sujeita aos sinais de fragilidade abaixo.")
+
+
+def render_validation_run(run):
+    split = json.loads(run["split_json"])
+    cost_grid = json.loads(run["cost_grid_json"])
+    concentration = json.loads(run["concentration_json"])
+    report = json.loads(run["report_json"])
+    adequacy_banner(run["sample_adequacy"], report.get("sample_adequacy_by_side", {}))
+    st.caption(f"Motor {run['engine_version']} · snapshot #{run['dataset_id']} · SHA-256 {run['data_sha256']} · "
+               f"hash das regras {report.get('rule_sha256', 'não registrado')} · "
+               f"fração out-of-sample {run['holdout_fraction']:.2f} · corte em {split.get('cut_utc', 'não registrado')} UTC")
+    st.markdown("**Corte temporal causal**")
+    sentence = lambda text: text[:1].upper() + text[1:] if text else ""
+    st.caption(sentence(split.get("look_ahead_guard", "")) + ". " + sentence(split.get("warmup_policy", "")) + ".")
+    st.dataframe([{ "Lado": name,
+                    "Início UTC": side["start_utc"], "Fim UTC": side["end_utc"],
+                    "Barras 1m": side["source_bar_count"],
+                    "Agregadas": side["aggregated_bar_count"],
+                    "Aquecimento": side["warmup_bars_required"],
+                    "Com sinal possível": side["bars_available_for_signals"],
+                    "Operações 10/5 bps": side["reference_trade_count"],
+                    "Amostra": ADEQUACY_TEXT[side["sample_adequacy"]] }
+                  for name, side in (("Treino", split["train"]), ("Out-of-sample", split["holdout"]))],
+                 hide_index=True, width="stretch")
+    st.markdown("**Grade de custo**")
+    st.dataframe([{ "Lado": name,
+                    "Taxa (bps/lado)": row["fee_bps_per_side"],
+                    "Slippage (bps/lado)": row["slippage_bps_per_side"],
+                    "Cenário": "baseline de sensibilidade (custo zero)" if row["cost_scenario"] == "sensitivity_baseline_zero" else "hipótese de custo",
+                    "Sinais": row["signal_count"], "Operações": row["trade_count"],
+                    "Acerto %": round(row["win_rate_pct"], 2),
+                    "Retorno líquido %": round(row["net_return_pct"], 4),
+                    "Drawdown máx. %": round(row["max_drawdown_pct"], 4) }
+                  for name, key in (("Treino", "train"), ("Out-of-sample", "holdout"))
+                  for row in cost_grid[key]["scenarios"]], hide_index=True, width="stretch")
+    st.markdown("**Concentração · resultado sem a melhor operação**")
+    concentration_rows = []
+    for name, key in (("Treino", "train"), ("Out-of-sample", "holdout")):
+        side = concentration[key]
+        if not side.get("evaluated"):
+            concentration_rows.append({"Lado": name, "Operações": 0, "Com todas %": "—",
+                                       "Sem a melhor %": "—", "Contribuição %": "—", "Inverte o sinal": "sem operações"})
+            continue
+        share = side.get("contribution_share_pct")
+        concentration_rows.append({
+            "Lado": name, "Operações": side["trade_count"],
+            "Com todas %": round(side["aggregate_net_return_pct"], 4),
+            "Sem a melhor %": round(side["net_return_pct_without_best"], 4),
+            "Contribuição %": "indefinida (resultado nulo)" if share is None else round(share, 2),
+            "Inverte o sinal": "sim" if side["sign_flips_without_best"] else "não"})
+    st.dataframe(concentration_rows, hide_index=True, width="stretch")
+    flags = report.get("fragility_flags", [])
+    st.markdown("**Sinais de fragilidade**")
+    if flags:
+        st.markdown("\n".join(f"- {esc(flag)}" for flag in flags))
+    else:
+        st.caption("Nenhum sinal de fragilidade detectado nesta leitura. Isso não constitui prova de robustez.")
+    st.caption("Fora de escopo nesta entrega: " + "; ".join(
+        f"{item['item']} ({item['reason']})" for item in report.get("out_of_scope", [])))
+
+
+def validation_section(datasets):
+    st.markdown("#### Validation Engine · treino e out-of-sample")
+    st.caption("Corte temporal causal sem embaralhar a série, grade fixa de custo (0/0, 5/2, 10/5 e 20/10 bps por lado), "
+               "concentração pelo melhor trade e rótulo de adequação da amostra. "
+               f"Menos de {ADEQUACY_MIN_TRADES} operações no pior lado é amostra insuficiente; "
+               f"de {ADEQUACY_MIN_TRADES} a {ADEQUACY_GOOD_TRADES - 1}, limítrofe; "
+               f"a partir de {ADEQUACY_GOOD_TRADES}, adequada. Nenhuma estratégia é promovida por resultado bruto.")
+    approved = [row for row in store.list_strategies()
+                if row["status"] == "approved"
+                and json.loads(row["rules_json"]).get("engine") == "setup_pattern_v1"]
+    eligible = [row for row in datasets if row["symbol"] in {"BTCUSDT", "ETHUSDT"}
+                and row["timeframe"] == "1m" and row["canonical_sha256"]]
+    if not approved:
+        st.info("Nenhuma versão de setup aprovada. A validação só roda sobre regras aprovadas por revisão humana.")
+    elif not eligible:
+        st.warning("Sem snapshot cripto de 1m com hash canônico. AAPL/MSFT de 1h não atendem aos intervalos 2m/5m.")
+    else:
+        for strategy in approved:
+            rules = json.loads(strategy["rules_json"])
+            with st.container(border=True):
+                st.markdown(f"**{strategy['name']} · v{strategy['version']}** · validação")
+                st.caption(f"{rules['setup_id']} · {rules['side']} · {', '.join(rules['timeframes'])}")
+                chosen = st.selectbox("Snapshot cripto verificado", eligible,
+                    format_func=lambda row: f"{row['symbol']} · {row['filename']} · {row['row_count']} barras",
+                    key=f"validation-dataset-{strategy['id']}")
+                c1, c2 = st.columns(2)
+                interval = c1.selectbox("Intervalo agregado", rules["timeframes"],
+                                        key=f"validation-timeframe-{strategy['id']}")
+                holdout = c2.slider("Fração out-of-sample", min_value=0.1, max_value=0.5, value=0.3,
+                                    step=0.05, key=f"validation-holdout-{strategy['id']}")
+                if st.button("Rodar validação", key=f"run-validation-{strategy['id']}", type="primary"):
+                    try:
+                        report = evaluate_validation(strategy, chosen["id"], interval, float(holdout))
+                        run_id = store.save_validation_run(strategy["id"], chosen["symbol"], interval,
+                                                           chosen["id"], chosen["sha256"], report)
+                        store.add_event("Strategy & Backtest", "INFO",
+                                        f"Validação #{run_id} concluída · {chosen['symbol']} · {interval} · "
+                                        f"amostra {report['sample_adequacy']}")
+                        st.success(f"Validação #{run_id} persistida. Rótulo da amostra: {report['sample_adequacy']}.")
+                        adequacy_banner(report["sample_adequacy"], report["sample_adequacy_by_side"])
+                    except (ValueError, KeyError) as exc:
+                        store.add_event("Strategy & Backtest", "ERROR", f"Validação falhou · {str(exc)[:250]}")
+                        st.error(str(exc))
+    runs = store.list_validation_runs()
+    if runs:
+        insufficient = sum(row["sample_adequacy"] == "insuficiente" for row in runs)
+        st.markdown("##### Validações persistidas")
+        st.caption(f"{len(runs)} validações registradas; {insufficient} com amostra insuficiente.")
+        for run in runs:
+            with st.expander(f"{run['symbol']} · {run['timeframe']} · "
+                             f"{ADEQUACY_TEXT[run['sample_adequacy']].upper()} · {run['created_at']} · #{run['id']}"):
+                render_validation_run(run)
+    else:
+        st.info("Nenhuma validação registrada. Rode uma validação acima ou `python -m scripts.run_delivery6`.")
 
 
 def page_backtests(counts):
@@ -1399,8 +1566,9 @@ def page_backtests(counts):
                 st.json({key: value for key, value in metrics.items() if key != "trades"})
                 if metrics.get("kind") == "historical_simulation":
                     st.dataframe(metrics.get("trades", []), hide_index=True, width="stretch")
+    validation_section(datasets)
     st.markdown("#### Limites do cálculo")
-    st.caption("SMA: apenas comprado. Setups: comprado ou vendido conforme regra, uma posição por ativo/setup por vez. Série de capital unitário simulada, sem saldo inicial, alavancagem, benchmark ou anualização. Taxas e slippage são hipóteses informadas; o histórico curto não valida desempenho futuro.")
+    st.caption("SMA: apenas comprado. Setups: comprado ou vendido conforme regra, uma posição por ativo/setup por vez. Série de capital unitário simulada, sem saldo inicial, alavancagem, benchmark ou anualização. Taxas e slippage são hipóteses informadas; o histórico curto não valida desempenho futuro. Na validação, cada lado do corte paga seu próprio aquecimento de 29 barras e o rótulo da amostra vem do pior dos dois lados.")
 
 
 def local_lab_main():
@@ -1469,6 +1637,27 @@ def render_reference():
             "created_at": item["created_at"], "signal_count": metrics.get("signal_count", 0),
             "trade_count": metrics.get("trade_count", 0),
         })
+    validation_snapshot = []
+    for item in store.list_validation_runs(limit=50):
+        split = json.loads(item["split_json"])
+        cost_grid = json.loads(item["cost_grid_json"])
+        concentration = json.loads(item["concentration_json"])
+        strategy = strategies.get(item["strategy_id"])
+        rules = json.loads(strategy["rules_json"]) if strategy else {}
+        validation_snapshot.append({
+            "id": item["id"], "strategy_id": item["strategy_id"],
+            "setup_name": rules.get("setup_name"), "symbol": item["symbol"],
+            "timeframe": item["timeframe"], "engine_version": item["engine_version"],
+            "holdout_fraction": item["holdout_fraction"],
+            "sample_adequacy": item["sample_adequacy"], "created_at": item["created_at"],
+            "cut_utc": split.get("cut_utc"),
+            "train_trade_count": split.get("train", {}).get("reference_trade_count", 0),
+            "holdout_trade_count": split.get("holdout", {}).get("reference_trade_count", 0),
+            "sign_flips_with_cost": bool(cost_grid.get("holdout", {}).get("sign_flips_with_cost")
+                                         or cost_grid.get("train", {}).get("sign_flips_with_cost")),
+            "sign_flips_without_best_trade": bool(concentration.get("holdout", {}).get("sign_flips_without_best")
+                                                  or concentration.get("train", {}).get("sign_flips_without_best")),
+        })
     snapshot = {
         "agents": store.get_agents(),
         "counts": store.counts(),
@@ -1480,6 +1669,7 @@ def render_reference():
         "alpaca_configured": overview["alpaca_configured"],
         "paper_operations": store.list_paper_operations()[:50],
         "backtests": backtest_snapshot,
+        "validation_runs": validation_snapshot,
     }
     payload = json.dumps(snapshot, ensure_ascii=False).replace("</", "<\\/")
     reference_html = reference_html.replace('<html lang="es">', '<html lang="pt-BR">', 1)
