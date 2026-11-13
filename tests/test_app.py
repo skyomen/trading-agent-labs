@@ -53,6 +53,18 @@ def verified_crypto_dataset(count=400):
     return next(row for row in store.list_historical_datasets() if row["id"] == dataset_id)
 
 
+def closed_paper_operation(symbol, side, quantity, entry_price, exit_price, fees):
+    """Insert a closed paper operation directly (no store helper exists for this yet)."""
+    with store.connect() as conn:
+        conn.execute(
+            "INSERT INTO paper_operations (symbol, side, quantity, entry_price, exit_price, "
+            "fees, source, state, closed_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (symbol, side, quantity, entry_price, exit_price, fees, "fixture", "closed",
+             "2026-11-13T00:00:00Z"),
+        )
+    return store.list_paper_operations()[0]
+
+
 class DashboardTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -85,7 +97,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Último evento registrado", rendered)
         self.assertIn("Estado de risco", rendered)
         self.assertIn('class="ticker"', rendered)
-        self.assertIn("counts.agents||0", rendered)
+        self.assertIn("function saldoRealizado()", rendered)
         self.assertIn("cortar(a.status,13)", rendered)
         self.assertIn("function pintarSalaCompacta()", rendered)
         self.assertIn("wrapSvgText(a.status,27)", rendered)
@@ -115,6 +127,52 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('"agent_runs": 0', rendered)
         self.assertIn('"paper_operations": 0', rendered)
         self.assertNotIn("Dinero ficticio", rendered)
+
+    def test_sala_balance_card_shows_neutral_state_without_closed_operations(self):
+        app = AppTest.from_file(str(APP_PATH)).run()
+
+        self.assertFalse(app.exception, [item.message for item in app.exception])
+        rendered = app.get("iframe")[0].proto.srcdoc
+        self.assertIn('"paper_operations": []', rendered)
+        self.assertIn("SEM OPERAÇÕES", rendered)
+        self.assertIn(
+            'saldo.hasClosed?((saldo.total>=0?"+":"")+saldo.total.toFixed(2)+" SALDO"):"SEM OPERAÇÕES"',
+            rendered,
+        )
+        self.assertNotIn('(counts.agents||0)+" AGENTES"', rendered)
+        self.assertNotIn("(counts.agents||0)+' AGENTES'", rendered)
+
+    def test_sala_balance_card_reflects_positive_realized_pnl(self):
+        operation = closed_paper_operation(
+            "BTCUSDT", "buy", quantity=2, entry_price=100.0, exit_price=150.0, fees=5.0)
+        expected_pnl = (operation["exit_price"] - operation["entry_price"]) * operation["quantity"] - operation["fees"]
+        self.assertEqual(expected_pnl, 95.0)
+        app = AppTest.from_file(str(APP_PATH)).run()
+
+        self.assertFalse(app.exception, [item.message for item in app.exception])
+        rendered = app.get("iframe")[0].proto.srcdoc
+        self.assertIn('"paper_operations": 1', rendered)
+        self.assertIn('"side": "buy"', rendered)
+        self.assertIn('"entry_price": 100.0', rendered)
+        self.assertIn('"exit_price": 150.0', rendered)
+        self.assertIn('"quantity": 2.0', rendered)
+        self.assertIn('"fees": 5.0', rendered)
+        self.assertIn('"state": "closed"', rendered)
+        self.assertIn('saldo.total>=0?"#42d392":"#ff6f61"', rendered)
+
+    def test_sala_balance_card_reflects_negative_realized_pnl(self):
+        operation = closed_paper_operation(
+            "BTCUSDT", "buy", quantity=2, entry_price=150.0, exit_price=100.0, fees=5.0)
+        expected_pnl = (operation["exit_price"] - operation["entry_price"]) * operation["quantity"] - operation["fees"]
+        self.assertEqual(expected_pnl, -105.0)
+        app = AppTest.from_file(str(APP_PATH)).run()
+
+        self.assertFalse(app.exception, [item.message for item in app.exception])
+        rendered = app.get("iframe")[0].proto.srcdoc
+        self.assertIn('"paper_operations": 1', rendered)
+        self.assertIn('"entry_price": 150.0', rendered)
+        self.assertIn('"exit_price": 100.0', rendered)
+        self.assertIn('saldo.total>=0?"#42d392":"#ff6f61"', rendered)
 
     def test_default_portal_embeds_persisted_backtest_summary(self):
         rules = {"engine": "setup_pattern_v1", "setup_name": "VBS"}

@@ -54,6 +54,11 @@ function validacoes(){ return LOCAL.validation_runs || []; }
 function validacoesInsuficientes(){ return validacoes().filter(function(v){return v.sample_adequacy==="insuficiente";}).length; }
 function feedAtual(){return (LOCAL.market_feeds||[]).filter(function(f){return f.effective_status==="connected";});}
 function feedResumo(){var n=feedAtual().length;return n?n+" feed(s) cripto de candles fechados":"Sem feed de mercado atual";}
+function saldoRealizado(){
+  var operations=(LOCAL.paper_operations||[]).filter(function(o){return o.state==="closed"&&o.exit_price!=null;}),total=0;
+  operations.forEach(function(o){var direction=o.side==="buy"?1:-1;total+=(o.exit_price-o.entry_price)*o.quantity*direction-o.fees;});
+  return {hasClosed:operations.length>0,total:total,closedCount:operations.length};
+}
 var LOCAL_COLORS = ["#7fb4ff", "#5fd3d0", "#c99bff", "#e8c66a", "#ff9f6b", "#8fdcb0"];
 function localText(value){ return esc(value == null ? "" : value); }
 function localStateClass(value){ return /apenas|bloque|pendente|aguardando|desconectado|não configurado/i.test(value) ? "off" : "trab"; }
@@ -156,7 +161,8 @@ function pintarSalaCompacta(){
   var ticker=(LOCAL.events||[]).slice(0,5).reverse().map(function(e){var actor=e.Agente==="Trading Lab"?"Sistema":e.Agente,msg=String(e.Atividade||"").replace(/\bindexed\b/gi,"indexado").replace(/\s+/g," ");return localTickerTime(e["Horário"])+" · "+actor+": "+cortar(msg,48);}).join("     ")||"Nenhuma atividade registrada no SQLite";
   var width=ticker.length*6.2+360,s='<defs><clipPath id="mobile-led" clipPathUnits="userSpaceOnUse"><rect x="16" y="49" width="358" height="23" rx="3"/></clipPath></defs>';
   s+='<rect width="390" height="660" fill="#0f151e"/><path d="M9 9h358l14 174H9z" fill="#19222f" stroke="#33415a" stroke-width="2"/>';
-  s+=T(20,31,(counts.agents||0)+" AGENTES",15,"#f0a43a",' font-weight="900"')+T(369,31,(counts.agent_runs||0)+" TAREFAS",12,"#e9eef4",' text-anchor="end" font-weight="700"');
+  var saldo=saldoRealizado(),saldoColor=saldo.hasClosed?(saldo.total>=0?"#42d392":"#ff6f61"):"#8d9aab",saldoLabel=saldo.hasClosed?((saldo.total>=0?"+":"")+saldo.total.toFixed(2)+" SALDO"):"SEM OPERAÇÕES",saldoFont=saldoLabel.length>13?12:15;
+  s+=T(20,31,saldoLabel,saldoFont,saldoColor,' font-weight="900"')+T(369,31,(counts.agent_runs||0)+" TAREFAS",12,"#e9eef4",' text-anchor="end" font-weight="700"');
   s+=T(20,44,docs+" PDFs indexados · "+(counts.events||0)+" eventos · "+feedResumo(),10,"#aab8c8");
   s+='<rect x="16" y="49" width="358" height="23" rx="3" fill="#0a0d12" stroke="#33415a"/><g clip-path="url(#mobile-led)"><g class="ticker" style="--fin:-'+Math.round(width)+'px;--dur:'+Math.max(24,Math.round(width/72))+'s"><text x="378" y="65" font-family="Doto,monospace" font-weight="700" font-size="11" fill="#f6c97a" xml:space="preserve">'+localText(ticker+"     "+ticker)+'</text></g></g>';
   s+='<path d="M194 81v63" stroke="#33415a"/><text x="20" y="94" font-family="Archivo,sans-serif" font-size="9" fill="#8d9aab">Último evento registrado</text>'+T(20,113,lastTime,11,"#e9eef4",' font-weight="700"')+T(20,130,lastActor,9,"#aab8c8")+T(20,145,cortar(lastMessage,30),8,"#8d9aab");
@@ -201,7 +207,8 @@ function pintarSala(){
   var eventMessage=latest?resumoEvento(latest.Atividade):"Sem atividade registrada";
   var led='<g transform="translate('+(A[0]+52)+','+(A[1]-HM+24)+') skewY(26.565)">';
   led+='<rect x="-8" y="-8" width="346" height="102" rx="6" fill="#0a0d12" stroke="#33415a"/>';
-  led+='<text x="4" y="30" font-family="Doto,monospace" font-weight="900" font-size="30" fill="#f0a43a">'+(counts.agents||0)+' AGENTES</text>';
+  var saldo=saldoRealizado(),saldoColor=saldo.hasClosed?(saldo.total>=0?"#42d392":"#ff6f61"):"#8d9aab",saldoLabel=saldo.hasClosed?((saldo.total>=0?"+":"")+saldo.total.toFixed(2)+" SALDO"):"SEM OPERAÇÕES",saldoFont=saldoLabel.length>10?20:30;
+  led+='<text x="4" y="30" font-family="Doto,monospace" font-weight="900" font-size="'+saldoFont+'" fill="'+saldoColor+'">'+localText(saldoLabel)+'</text>';
   led+='<text x="326" y="30" text-anchor="end" font-family="Doto,monospace" font-weight="900" font-size="20" fill="#e9eef4">'+(counts.agent_runs||0)+' TAREFAS</text>';
   led+='<text x="4" y="50" font-family="Archivo,sans-serif" font-size="11" fill="#8d9aab">'+docs+' PDFs indexados · '+(counts.events||0)+' eventos · '+localText(feedResumo())+'</text>';
   var ticker=(LOCAL.events||[]).slice(0,5).reverse().map(function(e){var actor=e.Agente==="Trading Lab"?"Sistema":e.Agente;return localTickerTime(e["Horário"])+" · "+actor+": "+String(e.Atividade||"").replace(/\s+/g," ");}).join("     ")||"Nenhum evento registrado";
