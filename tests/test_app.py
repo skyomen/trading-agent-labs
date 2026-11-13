@@ -193,7 +193,7 @@ class DashboardTests(unittest.TestCase):
         app.session_state["tal-view"] = "Laboratório"
         app.run()
         self.assertFalse(app.exception, [item.message for item in app.exception])
-        self.assertTrue(any("Regras aprovadas para backtest" in item.value for item in app.info))
+        self.assertTrue(any("Regras aprovadas para simulação histórica" in item.value for item in app.info))
         self.assertFalse(any("run-backtest" in str(button.key) for button in app.button))
 
 

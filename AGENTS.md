@@ -56,6 +56,12 @@ Laboratório local para acompanhar seis agentes de pesquisa intraday, organizar 
 - **REQ-18** — AAPL e MSFT possuem amostras horárias históricas públicas Market History, sem conta; são fonte histórica, não feed em tempo real. O conector opcional Alpaca IEX exige credenciais de dados no ambiente local e ação explícita. IEX não representa o mercado consolidado. Sem credenciais, manter a Alpaca desconectada; nenhuma chave em SQLite/logs. Streaming de ações depende de implementação e validação posteriores.
 - **TRD-08** — `services/datasets.py` valida manifesto e integridade; `services/market_data.py` acessa fontes externas mediante ação explícita. `database/store.py` é o único acesso a SQLite. O coletor é separado da interface e não possui função de negociação.
 
+## Entrega 5 — backtest dos quatro setups
+
+- **REQ-19** — Executar VBS, VSS, BOP e BDP aprovados apenas sobre snapshots BTCUSDT/ETHUSDT Binance Spot de 1m com hash canônico verificado. Agregar blocos UTC completos de 2m/5m, descartar e reportar blocos parciais e gaps. AAPL/MSFT horários são inelegíveis.
+- **REQ-20** — Simular ordem stop somente na barra seguinte ao sinal, expiração se não acionada, gap adverso, stop prioritário em conflito intrabar, trailing protetivo em VBS/VSS e liquidação identificada no fim dos dados. Custos por lado são hipóteses explícitas; zero requer confirmação. Resultados são históricos/simulados, sem saldo monetário ou ordem real.
+- **TRD-09** — `services/setup_backtest.py` valida aprovação, PDFs atuais, fonte e integridade; persiste relatório estruturado em `backtests` via `database/store.py`. `python -m scripts.run_delivery5` reproduz o cenário aprovado de 10 bps de taxa e 5 bps de slippage por lado, sem duplicar execuções idênticas.
+
 ## Contrato visual e rastreabilidade
 
 - Para REQ-13, `referencia.html` continua como autoridade estrutural e visual; o portal gera uma versão pt-BR ligada ao SQLite, conforme `DEC-2026-11-12-portal-localizado-dados-locais`. O antigo `trading-office-preview.html` continua como referência funcional do portal local.

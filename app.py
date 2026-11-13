@@ -22,6 +22,7 @@ from services import datasets as dataset_service
 from services import market_data
 from services.agents import provider_summary, run_agent_task
 from services.backtest import parse_ohlcv_csv, run_sma_crossover
+from services.setup_backtest import run_approved as run_approved_setup
 
 
 LOCAL_PORTAL_SCRIPT = r'''
@@ -1223,10 +1224,36 @@ def page_backtests(counts):
                 if strategy["status"] == "draft":
                     st.info("Versão em revisão dos parâmetros. A aprovação de conhecimento não autoriza backtest.")
                 else:
-                    st.info("Regras aprovadas para backtest. A execução exige histórico compatível, incremento mínimo e custos informados; o motor de backtest dos quatro setups vem na Entrega 5.")
+                    st.info("Regras aprovadas para simulação histórica. Use apenas snapshots cripto de 1 minuto verificados; a interface não envia ordens.")
                 st.json({key: value for key, value in rules.items() if key not in {"source"}})
                 for source in rules["source"]:
                     st.caption(f"Fonte: {source['path']} · páginas {', '.join(map(str, source['pages']))} · SHA-256 {source['sha256']}")
+                if strategy["status"] == "approved" and datasets:
+                    eligible = [row for row in datasets if row["symbol"] in {"BTCUSDT", "ETHUSDT"} and row["timeframe"] == "1m" and row["canonical_sha256"]]
+                    if eligible:
+                        with st.form(f"setup-backtest-{strategy['id']}"):
+                            chosen = st.selectbox("Snapshot cripto verificado", eligible,
+                                format_func=lambda row: f"{row['symbol']} · {row['filename']} · {row['row_count']} barras",
+                                key=f"setup-dataset-{strategy['id']}")
+                            interval = st.selectbox("Intervalo agregado", rules["timeframes"], key=f"setup-timeframe-{strategy['id']}")
+                            c1, c2 = st.columns(2)
+                            fee = c1.number_input("Taxa por lado (bps)", min_value=0.0, value=10.0, step=0.1, key=f"setup-fee-{strategy['id']}")
+                            slip = c2.number_input("Slippage adverso por lado (bps)", min_value=0.0, value=5.0, step=0.1, key=f"setup-slip-{strategy['id']}")
+                            zero_ok = st.checkbox("Confirmo cenário com custo zero, caso algum campo seja zero", key=f"setup-zero-{strategy['id']}")
+                            submitted = st.form_submit_button("Executar simulação histórica")
+                        if submitted:
+                            try:
+                                report = run_approved_setup(strategy, chosen["id"], interval, fee, slip, zero_ok)
+                                result_id = store.save_backtest(strategy["id"], chosen["symbol"], interval,
+                                    chosen["source"], chosen["sha256"], report)
+                                store.add_event("Strategy & Backtest", "INFO", f"Simulação histórica #{result_id} concluída · {chosen['symbol']} · {interval} · {report['trade_count']} operações")
+                                st.success(f"Simulação histórica #{result_id} persistida: {report['signal_count']} sinais, {report['trade_count']} operações.")
+                                st.json(report)
+                            except (ValueError, KeyError) as exc:
+                                store.add_event("Strategy & Backtest", "ERROR", f"Simulação histórica falhou · {str(exc)[:250]}")
+                                st.error(str(exc))
+                    else:
+                        st.warning("Sem snapshot cripto de 1m com hash canônico. AAPL/MSFT de 1h não atendem aos intervalos 2m/5m.")
             else:
                 st.caption(f"Regra {rules.get('engine')} · rápida {rules.get('fast_window')} / lenta {rules.get('slow_window')} · taxa {rules.get('fee_bps')} bps/lado · slippage {rules.get('slippage_bps')} bps/lado · {strategy['source']}")
             if strategy["status"] == "draft" and not is_setup:
@@ -1271,8 +1298,10 @@ def page_backtests(counts):
             with st.expander(f"{result['symbol']} · {result['timeframe']} · {result['created_at']} · #{result['id']}"):
                 st.caption(f"Origem declarada: {result['data_source']} · SHA-256: {result['data_sha256']}")
                 st.json({key: value for key, value in metrics.items() if key != "trades"})
+                if metrics.get("kind") == "historical_simulation":
+                    st.dataframe(metrics.get("trades", []), hide_index=True, width="stretch")
     st.markdown("#### Limites do cálculo")
-    st.caption("Long-only, uma posição por vez, sem capital inicial, alavancagem, benchmark, dividendos ou cálculo anualizado. Taxas e slippage vêm dos campos informados; revise custos e qualidade do arquivo antes de interpretar. Backtest não prevê desempenho futuro.")
+    st.caption("SMA: apenas comprado. Setups: comprado ou vendido conforme regra, uma posição por ativo/setup por vez. Série de capital unitário simulada, sem saldo inicial, alavancagem, benchmark ou anualização. Taxas e slippage são hipóteses informadas; o histórico curto não valida desempenho futuro.")
 
 
 def local_lab_main():

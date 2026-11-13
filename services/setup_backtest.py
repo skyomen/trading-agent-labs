@@ -1,0 +1,182 @@
+"""Deterministic, historical-only execution of approved setup signals."""
+
+import hashlib
+import json
+import math
+from datetime import datetime, timezone
+
+from database import store
+from services import datasets, documents
+from services.setup_signals import signal_at
+
+ENGINE_VERSION = "setup_backtest_v1"
+
+
+def aggregate_minutes(bars, minutes):
+    """Build complete UTC blocks; never bridge a missing minute."""
+    if minutes not in (2, 5):
+        raise ValueError("Intervalo agregado deve ser 2m ou 5m.")
+    groups = {}
+    for bar in bars:
+        stamp = datetime.fromisoformat(bar["timestamp"].replace("Z", "+00:00"))
+        if stamp.tzinfo is None or stamp.utcoffset().total_seconds() != 0 or stamp.second or stamp.microsecond:
+            raise ValueError("As barras de origem devem iniciar em minutos inteiros UTC.")
+        minute = int(stamp.timestamp() // 60)
+        groups.setdefault(minute - minute % minutes, []).append((minute, bar))
+    result, dropped = [], []
+    for start, group in sorted(groups.items()):
+        group.sort(key=lambda item: item[0])
+        if [item[0] for item in group] != list(range(start, start + minutes)):
+            dropped.append({"start_utc": datetime.fromtimestamp(start * 60, timezone.utc).isoformat(),
+                            "minutes_present": len(group)})
+            continue
+        rows = [item[1] for item in group]
+        result.append({"timestamp": datetime.fromtimestamp(start * 60, timezone.utc).isoformat(),
+                       "open": rows[0]["open"], "high": max(row["high"] for row in rows),
+                       "low": min(row["low"] for row in rows), "close": rows[-1]["close"],
+                       "volume": sum(row["volume"] for row in rows)})
+    gaps = sum((datetime.fromisoformat(b["timestamp"]) - datetime.fromisoformat(a["timestamp"])).total_seconds()
+               != minutes * 60 for a, b in zip(result, result[1:]))
+    return result, {"discarded_blocks": len(dropped), "discarded_examples": dropped[:20],
+                    "gaps_between_complete_blocks": gaps}
+
+
+def simulate(bars, rules, tick_size, fee_bps, slippage_bps):
+    """Signal at a close, fill only the next bar, and resolve ambiguous paths against the trade."""
+    if any(not math.isfinite(float(value)) or float(value) < 0 for value in (fee_bps, slippage_bps)):
+        raise ValueError("Custos devem ser finitos e não negativos.")
+    if not bars:
+        raise ValueError("Não há barras completas para o backtest.")
+    direction = 1 if rules["side"] == "buy" else -1
+    trades, signals, expired, conflicts = [], 0, 0, 0
+    position = None
+    equity, peak, drawdown = 1.0, 1.0, 0.0
+    trailing_updates = 0
+    minutes = int(rules["tested_timeframe"][:-1])
+    segment_start = 0
+
+    def close_position(index, price, reason, conflict=False):
+        nonlocal position, equity, peak, drawdown, conflicts
+        adverse = price * (1 - direction * slippage_bps / 10000)
+        gross = direction * (adverse - position["entry_price"]) / position["entry_price"]
+        fee = 2 * fee_bps / 10000
+        net = gross - fee
+        equity *= 1 + net
+        peak = max(peak, equity)
+        drawdown = max(drawdown, (peak - equity) / peak)
+        conflicts += int(conflict)
+        trades.append({"side": rules["side"], "signal_time": position["signal_time"],
+                       "entry_time": position["entry_time"], "exit_time": bars[index]["timestamp"],
+                       "entry_price": position["entry_price"], "exit_price": adverse,
+                       "initial_stop": position["initial_stop"], "final_stop": position["stop"],
+                       "target": position["target"], "exit_reason": reason,
+                       "intrabar_conflict": conflict, "trailing_updates": position["trailing_updates"],
+                       "gross_return_pct": gross * 100, "net_return_pct": net * 100})
+        position = None
+
+    for i, bar in enumerate(bars):
+        occupied_at_open = position is not None
+        if i and (datetime.fromisoformat(bar["timestamp"]) -
+                  datetime.fromisoformat(bars[i - 1]["timestamp"])).total_seconds() != minutes * 60:
+            if position:
+                close_position(i - 1, bars[i - 1]["close"], "gap_boundary")
+            segment_start = i
+        if position:
+            stop_hit = bar["low"] <= position["stop"] if direction == 1 else bar["high"] >= position["stop"]
+            target_hit = bar["high"] >= position["target"] if direction == 1 else bar["low"] <= position["target"]
+            if stop_hit or target_hit:
+                close_position(i, position["stop"] if stop_hit else position["target"],
+                               "stop" if stop_hit else "target", stop_hit and target_hit)
+            else:
+                if direction * (bar["close"] - position["entry_price"]) > 0:
+                    position["favorable_closes"] += 1
+                if (position["favorable_closes"] >= 2 and rules["setup_name"] in {"VBS", "VSS"} and i > 0):
+                    candidate = bars[i - 1]["low"] if direction == 1 else bars[i - 1]["high"]
+                    if direction * (candidate - position["stop"]) > 0:
+                        position["stop"] = candidate
+                        position["trailing_updates"] += 1
+                        trailing_updates += 1
+        if occupied_at_open or position or i - segment_start < 29 or i == len(bars) - 1:
+            continue
+        # The signal is evaluated on i-1; order lives only on i. No prior signal
+        # is evaluated across an absent aggregate bar.
+        if i == 0 or (datetime.fromisoformat(bar["timestamp"]) -
+                      datetime.fromisoformat(bars[i - 1]["timestamp"])).total_seconds() != minutes * 60:
+            continue
+        signal = signal_at(bars, i - 1, rules, tick_size)
+        if signal is None:
+            continue
+        signals += 1
+        triggered = bar["high"] >= signal["entry"] if direction == 1 else bar["low"] <= signal["entry"]
+        if not triggered:
+            expired += 1
+            continue
+        raw_entry = max(bar["open"], signal["entry"]) if direction == 1 else min(bar["open"], signal["entry"])
+        entry = raw_entry * (1 + direction * slippage_bps / 10000)
+        position = {"entry_price": entry, "entry_time": bar["timestamp"],
+                    "signal_time": signal["signal_bar"], "initial_stop": signal["stop"],
+                    "stop": signal["stop"], "target": signal["target"],
+                    "favorable_closes": 0, "trailing_updates": 0}
+        stop_hit = bar["low"] <= signal["stop"] if direction == 1 else bar["high"] >= signal["stop"]
+        target_hit = bar["high"] >= signal["target"] if direction == 1 else bar["low"] <= signal["target"]
+        if stop_hit or target_hit:
+            # With no intrabar sequence, even target-only on the entry bar is ambiguous.
+            close_position(i, signal["stop"], "entry_bar_ambiguous_stop", True)
+    if position:
+        close_position(len(bars) - 1, bars[-1]["close"], "end_of_data")
+    wins = sum(trade["net_return_pct"] > 0 for trade in trades)
+    return {"signal_count": signals, "expired_entries": expired, "trade_count": len(trades),
+            "win_rate_pct": 100 * wins / len(trades) if trades else 0.0,
+            "net_return_pct": 100 * (equity - 1), "equity_index": equity,
+            "max_drawdown_pct": 100 * drawdown, "estimated_fees_pct_of_notional":
+            len(trades) * 2 * fee_bps / 100,
+            "estimated_slippage_bps_round_trip": 2 * slippage_bps,
+            "intrabar_conflicts": conflicts,
+            "trailing_updates": trailing_updates, "trades": trades}
+
+
+def run_approved(strategy, dataset_id, timeframe, fee_bps=10.0, slippage_bps=5.0,
+                 confirm_zero_costs=False):
+    if strategy["status"] != "approved":
+        raise ValueError("A estratégia precisa estar aprovada.")
+    rules = json.loads(strategy["rules_json"])
+    if rules.get("engine") != "setup_pattern_v1" or rules.get("approval") != "rules_human_approved":
+        raise ValueError("A versão não contém regras de setup aprovadas.")
+    if timeframe not in rules["timeframes"] or timeframe not in {"2m", "5m"}:
+        raise ValueError("Intervalo incompatível com as regras aprovadas.")
+    if (fee_bps == 0 or slippage_bps == 0) and not confirm_zero_costs:
+        raise ValueError("Custo zero exige confirmação explícita.")
+    current = {item["path"]: item for item in documents.library_status()}
+    for source in rules["source"]:
+        entry = current.get(source["path"], {})
+        if entry.get("status") != "indexed" or entry.get("record", {}).get("sha256") != source["sha256"]:
+            raise ValueError("PDF de origem ausente, alterado ou sem índice atual: " + source["path"])
+    restored = datasets.load_verified(dataset_id)
+    row, metadata = restored["dataset"], restored["metadata"]
+    if not row["canonical_sha256"] or metadata.get("market") != "crypto" or row["timeframe"] != "1m":
+        raise ValueError("Exige snapshot cripto de 1m com hash canônico; ações horárias são inelegíveis.")
+    if (row["symbol"] not in {"BTCUSDT", "ETHUSDT"} or metadata.get("quote_currency") != "USDT"
+            or metadata.get("provider") != "Binance Spot public"):
+        raise ValueError("Fonte/símbolo incompatível com esta execução de setup.")
+    tick_size = float(metadata["tick_size"])
+    bars, coverage = aggregate_minutes(restored["bars"], int(timeframe[:-1]))
+    if not bars:
+        raise ValueError("Nenhuma barra agregada completa.")
+    tested_rules = {**rules, "tested_timeframe": timeframe}
+    metrics = simulate(bars, tested_rules, tick_size, fee_bps, slippage_bps)
+    rule_hash = hashlib.sha256(strategy["rules_json"].encode("utf-8")).hexdigest()
+    return {"kind": "historical_simulation", "engine_version": ENGINE_VERSION,
+            "strategy_id": strategy["id"], "strategy_version": strategy["version"],
+            "rule_sha256": rule_hash, "source_pdfs": rules["source"],
+            "dataset_id": dataset_id, "file_sha256": row["sha256"],
+            "canonical_sha256": row["canonical_sha256"], "source": row["source"],
+            "symbol": row["symbol"], "market": metadata["market"],
+            "source_timeframe": "1m", "timeframe": timeframe,
+            "start_utc": bars[0]["timestamp"], "end_utc": bars[-1]["timestamp"],
+            "source_bar_count": len(restored["bars"]), "aggregated_bar_count": len(bars),
+            "coverage": coverage, "fee_bps_per_side": fee_bps,
+            "slippage_bps_per_side": slippage_bps,
+            "cost_scenario": "zero_confirmed" if fee_bps == slippage_bps == 0 else "user_supplied_assumption",
+            "filters": {"market": "crypto", "provider": "Binance Spot public",
+                        "source_timeframe": "1m", "complete_utc_blocks_only": True},
+            **metrics}

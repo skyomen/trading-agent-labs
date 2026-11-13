@@ -351,11 +351,19 @@ O comando de prova do projeto é `python main.py test`. Na Entrega 2, 35 testes 
 - Para ações dos EUA em tempo real, configurar acesso a um provedor apropriado; a Market History fornece apenas amostras históricas, e a Alpaca IEX opcional exige credenciais não disponíveis neste ambiente.
 - Confirmar licença, documentação e SDK do XP Trader 5.0.4.34 e conta de simulação antes de qualquer integração.
 - Definir/implementar o fluxo operacional de registro de operações simuladas conforme os dados e regras que forem aprovados; a tabela e a apresentação existem, mas o snapshot tem zero operações.
-- Executar backtests dos quatro setups aprovados sobre os datasets reais importados; trabalho da Entrega 5.
+- Avaliar os quatro setups em janelas independentes e mais longas; a demonstração da Entrega 5 usa apenas cerca de 16h38 de candles de cada par e não sustenta inferência estatística.
 - Revisar manualmente conceitos e setups propostos; aprovação não formaliza estratégia executável nem autoriza backtest ou operação.
 - Registrar execuções de agentes e avaliar seus resultados somente depois que o provedor e o contexto estiverem autorizados.
 
 ## 17. Rastreabilidade
+
+### Entrega 5: simulação histórica dos quatro setups
+
+O usuário aprovou o plano `docs/plans/entrega-5-backtest-quatro-setups.md` em 13/11/2026. `services/setup_backtest.py` exige versão `setup_pattern_v1` aprovada, hashes atuais dos dois PDFs, snapshot Binance Spot BTCUSDT/ETHUSDT de 1m recuperado por `load_verified`, manifesto cripto/USDT e hash canônico. Agrega somente blocos UTC completos de 2m ou 5m, registra blocos descartados e lacunas. AAPL/MSFT de 1h são inelegíveis. Não há acesso a corretora nem preparação de ordem real.
+
+O motor avalia sinais no fechamento, mantém a entrada stop apenas na barra seguinte, cobra taxa e slippage adverso por lado e resolve caminho intrabar ambíguo pelo stop. Limita uma posição por setup/ativo, não atravessa gaps sem identificar a saída, aplica trailing protetivo a VBS/VSS após dois fechamentos favoráveis e marca fechamento no fim dos dados como `end_of_data`. O retorno usa índice unitário simulado, sem saldo monetário. Relatórios em `backtests.metrics_json` incluem hashes, regras, origem, cobertura, custos, sinais, expirações, trades, motivos de saída e conflitos. A UI do laboratório expõe formulário e relatórios; custo zero exige confirmação explícita.
+
+O cenário demonstrativo aprovado usa 10 bps de taxa e 5 bps de slippage por lado. `python -m scripts.run_delivery5` executou as 16 combinações de quatro setups, dois pares e dois intervalos; uma segunda execução comparou os relatórios e não duplicou registros. Contagens de sinais/operações: VBS BTCUSDT 2m 4/1, 5m 1/1; VBS ETHUSDT 2m 6/1, 5m 2/2. VSS BTCUSDT 2m 12/4, 5m 2/0; VSS ETHUSDT 2m 5/1, 5m 3/1. BOP BTCUSDT 2m 51/14, 5m 21/5; BOP ETHUSDT 2m 57/15, 5m 21/6. BDP BTCUSDT 2m 46/15, 5m 15/5; BDP ETHUSDT 2m 50/14, 5m 12/5. Esses números são resultados históricos simulados dos snapshots locais curtos, não recomendações ou evidência de retorno futuro.
 
 ### Entrega 4: históricos e coleta contínua (em validação)
 

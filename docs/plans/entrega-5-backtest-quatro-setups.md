@@ -1,6 +1,6 @@
 # Entrega 5 — plano de backtest dos quatro setups
 
-Estado: proposta para aprovação. Nenhum backtest dos quatro setups foi executado.
+Estado: aprovado pelo usuário em 13/11/2026; implementação e demonstração registradas na run da Entrega 5.
 
 ## Base observada em 13/11/2026
 
