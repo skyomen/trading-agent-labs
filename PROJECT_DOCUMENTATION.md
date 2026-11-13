@@ -19,7 +19,7 @@ O projeto tem duas apresentações:
 
 - Windows 11 conforme o README atual.
 - Python 3.11 ou superior.
-- Dependências declaradas em `requirements.txt`: Streamlit (`>=1.49,<2.0`) e pypdf (`>=5.1,<7.0`).
+- Dependências declaradas em `requirements.txt`: Streamlit (`>=1.49,<2.0`), pypdf (`>=5.1,<7.0`) e websockets (`>=14,<18`) para o coletor público Binance.
 
 ### Instalação
 
@@ -158,7 +158,9 @@ O arquivo é `database/trading.db`; `database/store.py` configura `sqlite3.Row`,
 | `knowledge_items` | Conceitos e setups versionados, evidência, fonte, hash, página e revisão humana. |
 | `agent_reviews` | Observação, hipótese, aprendizado proposto, evento relacionado e estado de aprovação. |
 | `strategies` | Regras JSON, origem, versão e estado `draft`, `approved` ou `archived`. Nome + versão são únicos. |
-| `historical_datasets` | Arquivo, símbolo, intervalo, fonte declarada, SHA-256 e número de barras. |
+| `historical_datasets` | Arquivo, símbolo, intervalo, fonte declarada, SHA-256 do CSV, número de barras, manifesto JSON e SHA-256 canônico das barras. |
+| `market_bars` | Candles fechados recebidos pelo coletor, separados dos snapshots históricos por fonte, símbolo, intervalo e horário. |
+| `market_feeds` | Estado de conexão, último candle, última verificação e erro; a interface considera o registro atrasado quando o coletor não atualiza. |
 | `historical_bars` | OHLCV histórico por dataset e timestamp; dataset + timestamp são chave primária. |
 | `backtests` | Estratégia, ativo, intervalo, origem/hash dos dados, métricas JSON, estado e data. |
 | `paper_operations` | Operações simuladas, lado, quantidade, preços, custo, fonte e estado aberto/encerrado/cancelado. |
@@ -338,21 +340,48 @@ O comando de prova do projeto é `python main.py test`. Na Entrega 2, 35 testes 
 - Indexação local de PDFs com hash, páginas, trechos, status/erro e filtragem do contexto por agente.
 - Conector opcional de LLM com chamada explícita e fluxo de consentimento para contexto documental.
 - Revisão humana de memória/aprendizado e estratégia versionada/aprovável.
-- Importação CSV OHLCV validada e backtest SMA histórico com custos explícitos.
+- Importação CSV OHLCV com manifesto obrigatório, lacunas, hash duplo, reprodução verificada e backtest SMA histórico com custos explícitos.
+- Captura explícita de BTCUSDT e ETHUSDT públicos Binance Spot; coletor separado para candles fechados de 1 minuto com reconexão e backfill.
 - Painéis vazios/desconectados para mercado, capital, operações e integrações ausentes.
 - Separação visual da sala de execução, bloqueio de ordens reais e layout responsivo da referência.
 
 ### Ainda não conectado, sem dados ou dependente de decisão
 
 - Escolher/configurar provedor LLM e autorizar por provedor quais dados podem ser compartilhados.
-- Escolher fontes de mercado para criptoativos e ações dos EUA.
+- Para ações dos EUA em tempo real, configurar acesso a um provedor apropriado; a Market History fornece apenas amostras históricas, e a Alpaca IEX opcional exige credenciais não disponíveis neste ambiente.
 - Confirmar licença, documentação e SDK do XP Trader 5.0.4.34 e conta de simulação antes de qualquer integração.
 - Definir/implementar o fluxo operacional de registro de operações simuladas conforme os dados e regras que forem aprovados; a tabela e a apresentação existem, mas o snapshot tem zero operações.
-- Criar/importar estratégias e dados históricos para gerar backtests reais/reproduzíveis; não havia registros no snapshot.
+- Executar backtests dos quatro setups aprovados sobre os datasets reais importados; trabalho da Entrega 5.
 - Revisar manualmente conceitos e setups propostos; aprovação não formaliza estratégia executável nem autoriza backtest ou operação.
 - Registrar execuções de agentes e avaliar seus resultados somente depois que o provedor e o contexto estiverem autorizados.
 
 ## 17. Rastreabilidade
+
+### Entrega 4: históricos e coleta contínua (em validação)
+
+`services/datasets.py` valida CSV e manifesto antes de gravar. O manifesto exige símbolo, `crypto` ou `us_equity`, fonte, intervalo, UTC explícito, moeda de cotação, incremento mínimo positivo, unidade de volume e nota de licença. O parser existente rejeita duplicatas, horários fora de ordem, valores não finitos, OHLC incoerente, volume negativo, arquivo vazio ou com menos de três barras. A validação adicional registra lacunas sem preencher candles inexistentes. `sha256` identifica os bytes do CSV; `canonical_sha256` identifica as barras normalizadas recuperadas do banco. `load_verified(id)` recalcula o hash e falha se o conteúdo persistido divergir. Registros legados continuam legíveis, mas não possuem manifesto ou hash canônico retroativos.
+
+Dois snapshots reais foram importados em 13/11/2026 pela [API pública de mercado da Binance](https://github.com/binance/binance-spot-api-docs/blob/master/faqs/market_data_only.md): BTCUSDT no dataset #2 e ETHUSDT no dataset #1, ambos com 999 candles de 1 minuto fechados, de 12/11/2026 20:07 a 13/11/2026 12:45 UTC. Ambos tinham zero lacunas no intervalo observado e foram recuperados com verificação do hash canônico. Os arquivos CSV normalizados não são distribuídos pelo Git; os snapshots estão no SQLite local ignorado pelo repositório. Os IDs são específicos deste banco e podem mudar em outra instalação.
+
+O coletor em `services/market_data.py` usa o [WebSocket público de candles spot](https://github.com/binance/binance-spot-api-docs/blob/master/web-socket-streams.md), persiste somente mensagens com candle fechado (`x=true`) e valida símbolo e intervalo. Ao iniciar ou reconectar, busca até 1.000 candles fechados pelo REST público para preencher lacunas recentes. `market_bars` é mutável e separado dos snapshots; uma captura histórica imutável exige novo comando de importação. O socket e o processo podem cair; o estado `connected` só é considerado atual pela interface enquanto `checked_at` tiver menos de 120 segundos. Não há garantia de disponibilidade 24/7 sem supervisor de processo e computador ligado. O feed não transmite ordens nem lê conta.
+
+```powershell
+python -m services.market_data import --symbol BTCUSDT
+python -m services.market_data import --symbol ETHUSDT
+python -m services.market_data stream
+```
+
+O terceiro comando mantém a coleta de BTCUSDT e ETHUSDT em primeiro plano até interrupção; pode ser executado sob um supervisor local. A interface em `?lab=1` permite importar o snapshot público por ação explícita, consultar estados de feed e verificar/reproduzir qualquer dataset. Dados da Binance são pares spot cotados em USDT; não equivalem a BTC/USD ou ETH/USD.
+
+O portal padrão e o cabeçalho do laboratório calculam o estado atual com base na última verificação do processo e no horário do último candle. O portal mostra o último fechamento persistido, a fonte e o horário UTC; ele não fornece ticks nem preço executável. A página é um snapshot e deve ser atualizada para refletir candles novos. XP Trader, capital e operações reais seguem desconectados/bloqueados.
+
+Para ações, AAPL e MSFT foram importadas como amostras horárias públicas da [Market History](https://getmarkethistory.com/docs/quickstart/), respectivamente datasets #3 e #4, com 100 barras cada. A fonte declara [em seus termos](https://getmarkethistory.com/docs/terms/) que oferece dados históricos e não um feed em tempo real; permite armazenamento/análise local e proíbe redistribuição dos dados brutos. O CSV recebido é normalizado, validado e persistido com URL, mercado, moeda, unidade, incremento mínimo e hash. O horário estendido/overnight pertence à amostra da fonte; a validação preserva lacunas e não cria barras de sessões ausentes.
+
+O conector histórico opcional usa o [endpoint de barras Alpaca](https://docs.alpaca.markets/us/reference/stockbars) com `feed=iex`, `adjustment=raw`, limite de 1.000 barras e rejeição de resposta paginada para evitar truncamento silencioso. A [documentação do plano de dados](https://docs.alpaca.markets/us/docs/about-market-data-api) informa que o nível Basic cobre IEX, uma bolsa, e exige autenticação. O processo só acessa a API quando `ALPACA_API_KEY` e `ALPACA_API_SECRET` estão no ambiente local e o usuário aciona a importação de AAPL ou MSFT. O banco e a UI não guardam nem exibem as credenciais. Nenhum dado Alpaca foi importado neste ambiente. Não há coletor de ações em tempo real validado nesta entrega; a [documentação da Alpaca](https://docs.alpaca.markets/us/docs/real-time-stock-pricing-data) fornece a opção de WebSocket IEX para etapa posterior.
+
+Para dados de ações, ausência de candle pode representar mercado fechado, falta de negócios na IEX ou falha de conexão; sem calendário e estado de sessão, não se infere qual deles. Para cripto, o estado atrasado usa a idade do processo e do último candle. Nenhum feed é tratado como preço negociável nem gera sinal, P&L ou ordem.
+
+Provas automatizadas: `python main.py test` passou com 46 testes após a migração/importação; os testes das fontes cobrem candle incompleto, ausência de credenciais e reprodução do CSV público de ações. Playwright confirmou os feeds atuais no portal e ausência de rolagem horizontal em 1440×1000, 390×844 e 320×740; o cabeçalho do laboratório indicou `2 / 2` feeds cripto atuais. O aceite histórico da Entrega 4 contempla BTCUSDT, ETHUSDT, AAPL e MSFT. Para backtests intraday dos quatro setups, as amostras horárias de ações podem ser insuficientes; uma fonte de minuto autorizada será necessária antes de validar esses setups em ações. Tempo real para ações permanece pendente de acesso a provedor apropriado.
 
 As regras e requisitos ativos vivem em [`AGENTS.md`](AGENTS.md). As decisões de referência, localização e layout residem em `../_capsule/decisoes/`, especialmente:
 

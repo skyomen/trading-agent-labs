@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 import streamlit as st
@@ -12,6 +14,8 @@ import streamlit as st
 from database import store
 from services import documents
 from services import knowledge as knowledge_service
+from services import datasets as dataset_service
+from services import market_data
 from services.agents import provider_summary, run_agent_task
 from services.backtest import parse_ohlcv_csv, run_sma_crossover
 
@@ -32,7 +36,9 @@ function T(x,y,text,size,fill,extra){return '<text x="'+x+'" y="'+y+'" font-size
 function cortar(text,n){text=String(text);return text.length>n?text.slice(0,n-1)+"…":text;}
 function caja(u,v,du,dv,h,top,side1,side2){var a=P(u-du/2,v-dv/2),b=P(u+du/2,v-dv/2),c=P(u+du/2,v+dv/2),d=P(u-du/2,v+dv/2);return poly([b,c,sube(c,h),sube(b,h)],side2)+poly([d,c,sube(c,h),sube(d,h)],side1)+poly([sube(a,h),sube(b,h),sube(c,h),sube(d,h)],top);}
 function kpi(label,value){return '<div class="kpi"><small>'+label+'</small><strong>'+value+'</strong></div>';}
-var LOCAL = window.TAL_DATA || {agents:[], counts:{}, documents:[], events:[], connections:[]};
+var LOCAL = window.TAL_DATA || {agents:[], counts:{}, documents:[], events:[], connections:[], market_feeds:[]};
+function feedAtual(){return (LOCAL.market_feeds||[]).filter(function(f){return f.effective_status==="connected";});}
+function feedResumo(){var n=feedAtual().length;return n?n+" feed(s) cripto de candles fechados":"Sem feed de mercado atual";}
 var LOCAL_COLORS = ["#7fb4ff", "#5fd3d0", "#c99bff", "#e8c66a", "#ff9f6b", "#8fdcb0"];
 function localText(value){ return esc(value == null ? "" : value); }
 function localStateClass(value){ return /apenas|bloque|pendente|aguardando|desconectado|não configurado/i.test(value) ? "off" : "trab"; }
@@ -54,7 +60,7 @@ function pintarCabecera(){
   var c=LOCAL.counts, docs=LOCAL.documents.filter(function(d){return d.status==="indexed";}).length;
   var vals=[["Agentes",c.agents||0],["PDFs indexados",docs],["Tarefas",c.agent_runs||0],["Eventos",c.events||0]];
   $("kpis").innerHTML=vals.map(function(v){return kpi(v[0],String(v[1]));}).join("");
-  $("pills").innerHTML='<span class="pill warn">Sem feed de mercado</span><span class="pill">XP Trader desconectado</span><span class="pill demo">Somente simulação</span>';
+  $("pills").innerHTML='<span class="pill warn">'+localText(feedResumo())+'</span><span class="pill">XP Trader desconectado</span><span class="pill demo">Somente simulação</span>';
   $("parada").className="parada"; $("parada").textContent="";
 }
 function pintarRanking(){
@@ -83,7 +89,7 @@ function pintarInforme(){
 function pintarControl(){
   var docs=LOCAL.documents||[], con=LOCAL.connections||[];
   $("p-ctl").innerHTML='<div class="sec">Conexões e segurança</div><div class="kv">'+
-    '<span>Feed de mercado</span><span>Não conectado</span><span>XP Trader 5.0.4.34</span><span>Não conectado</span><span>Modo</span><span>Simulação local</span><span>Ordens reais</span><span>Bloqueadas</span></div>'+
+    '<span>Feed de mercado</span><span>'+localText(feedResumo())+'</span><span>XP Trader 5.0.4.34</span><span>Não conectado</span><span>Modo</span><span>Simulação local</span><span>Ordens reais</span><span>Bloqueadas</span></div>'+
     '<div class="sec">Biblioteca local</div>'+(docs.length?docs.map(function(d){return '<div class="item"><span>'+localText(d.filename)+' · '+localText(localDocumentStatus(d.status))+'</span></div>';}).join(""):'<p class="local-empty">Nenhum documento registrado no índice.</p>')+
     '<div class="sec">Conectores registrados</div>'+(con.length?con.map(function(x){return '<div class="item"><span>'+localText(x.provider||x.key)+' · '+localText(localConnectionStatus(x.status))+'</span></div>';}).join(""):'<p class="local-empty">Nenhum conector foi configurado.</p>')+
     '<p class="note">Este painel não conecta contas nem envia ordens. Uma conexão futura exige configuração e autorização próprias.</p>';
@@ -129,7 +135,7 @@ function pintarSalaCompacta(){
   var width=ticker.length*6.2+360,s='<defs><clipPath id="mobile-led" clipPathUnits="userSpaceOnUse"><rect x="16" y="49" width="358" height="23" rx="3"/></clipPath></defs>';
   s+='<rect width="390" height="660" fill="#0f151e"/><path d="M9 9h358l14 174H9z" fill="#19222f" stroke="#33415a" stroke-width="2"/>';
   s+=T(20,31,(counts.agents||0)+" AGENTES",15,"#f0a43a",' font-weight="900"')+T(369,31,(counts.agent_runs||0)+" TAREFAS",12,"#e9eef4",' text-anchor="end" font-weight="700"');
-  s+=T(20,44,docs+" PDFs indexados · "+(counts.events||0)+" eventos · sem feed",10,"#aab8c8");
+  s+=T(20,44,docs+" PDFs indexados · "+(counts.events||0)+" eventos · "+feedResumo(),10,"#aab8c8");
   s+='<rect x="16" y="49" width="358" height="23" rx="3" fill="#0a0d12" stroke="#33415a"/><g clip-path="url(#mobile-led)"><g class="ticker" style="--fin:-'+Math.round(width)+'px;--dur:'+Math.max(24,Math.round(width/72))+'s"><text x="378" y="65" font-family="Doto,monospace" font-weight="700" font-size="11" fill="#f6c97a" xml:space="preserve">'+localText(ticker+"     "+ticker)+'</text></g></g>';
   s+='<path d="M194 81v63" stroke="#33415a"/><text x="20" y="94" font-family="Archivo,sans-serif" font-size="9" fill="#8d9aab">Último evento registrado</text>'+T(20,113,lastTime,11,"#e9eef4",' font-weight="700"')+T(20,130,lastActor,9,"#aab8c8")+T(20,145,cortar(lastMessage,30),8,"#8d9aab");
   s+=T(205,94,"Estado de risco",9,"#8d9aab")+'<circle cx="211" cy="111" r="4" fill="'+riskColor+'"/>';
@@ -175,7 +181,7 @@ function pintarSala(){
   led+='<rect x="-8" y="-8" width="346" height="102" rx="6" fill="#0a0d12" stroke="#33415a"/>';
   led+='<text x="4" y="30" font-family="Doto,monospace" font-weight="900" font-size="30" fill="#f0a43a">'+(counts.agents||0)+' AGENTES</text>';
   led+='<text x="326" y="30" text-anchor="end" font-family="Doto,monospace" font-weight="900" font-size="20" fill="#e9eef4">'+(counts.agent_runs||0)+' TAREFAS</text>';
-  led+='<text x="4" y="50" font-family="Archivo,sans-serif" font-size="11" fill="#8d9aab">'+docs+' PDFs indexados · '+(counts.events||0)+' eventos · sem feed</text>';
+  led+='<text x="4" y="50" font-family="Archivo,sans-serif" font-size="11" fill="#8d9aab">'+docs+' PDFs indexados · '+(counts.events||0)+' eventos · '+localText(feedResumo())+'</text>';
   var ticker=(LOCAL.events||[]).slice(0,5).reverse().map(function(e){var actor=e.Agente==="Trading Lab"?"Sistema":e.Agente;return localTickerTime(e["Horário"])+" · "+actor+": "+String(e.Atividade||"").replace(/\s+/g," ");}).join("     ")||"Nenhum evento registrado";
   var tickerWidth=ticker.length*8.4+340;
   led+='<g clip-path="url(#led)"><g class="ticker" style="--fin:-'+Math.round(tickerWidth)+'px;--dur:'+Math.max(24,Math.round(tickerWidth/38))+'s"><text x="340" y="78" font-family="Doto,monospace" font-weight="700" font-size="15" fill="#f6c97a" xml:space="preserve">'+localText(ticker+"     "+ticker)+'</text></g></g>';
@@ -210,7 +216,7 @@ function pintarParte(){
   var research=D.agentes.find(function(a){return a.nome==="Research Agent";});
   var mismatch=research&&indexed>0&&/aguardando documentos/i.test(research.status)
     ? '<li>Atenção: o Research Agent ainda está marcado como aguardando documentos, embora '+indexed+' PDF(s) estejam indexados. O estado não é atualizado automaticamente.</li>' : '';
-  el.innerHTML='<div class="pt"><h3>Diretor geral</h3><div class="tit">Resumo do laboratório</div><ul><li>'+D.agentes.length+' agentes locais cadastrados; o portal não os executa em segundo plano.</li><li>'+((LOCAL.counts.agent_runs||0))+' tarefas executadas e '+((LOCAL.counts.events||0))+' eventos no histórico.</li>'+mismatch+'<li>Sem feed de mercado; nenhuma ordem real pode ser enviada.</li></ul></div>';
+  el.innerHTML='<div class="pt"><h3>Diretor geral</h3><div class="tit">Resumo do laboratório</div><ul><li>'+D.agentes.length+' agentes locais cadastrados; o portal não os executa em segundo plano.</li><li>'+((LOCAL.counts.agent_runs||0))+' tarefas executadas e '+((LOCAL.counts.events||0))+' eventos no histórico.</li>'+mismatch+'<li>'+localText(feedResumo())+'; nenhuma ordem real pode ser enviada.</li></ul></div>';
 }
 function pintarFicha(){
   var a=D.agentes[SEL];if(!a)return;
@@ -227,8 +233,9 @@ function pintarEvolucion(){
 function pintarMercado(){
   $("mhead").innerHTML='<div class="sec">Mercado</div>';
   var font=window.innerWidth<500?32:17;
-  $("rng").innerHTML=""; $("mchart").innerHTML='<text x="450" y="220" text-anchor="middle" fill="#aab8c8" font-size="'+font+'" font-family="Archivo,sans-serif">Nenhuma fonte de mercado conectada.</text>';
-  $("mnote").textContent="Cotações não são carregadas nesta etapa. Configure uma fonte autorizada na próxima entrega.";
+  var feeds=LOCAL.market_feeds||[];
+  $("rng").innerHTML=""; $("mchart").innerHTML='<text x="450" y="220" text-anchor="middle" fill="#aab8c8" font-size="'+font+'" font-family="Archivo,sans-serif">'+localText(feedResumo())+'</text>';
+  $("mnote").textContent=feeds.length?feeds.map(function(f){return f.symbol+" · Binance Spot · fechamento 1m "+(f.last_close==null?"indisponível":f.last_close)+" USDT · "+(f.last_bar_at||"sem barra")+" UTC · "+f.effective_status;}).join(" | ")+". Histórico local; nenhuma ordem é enviada.":"Nenhum feed de mercado persistido. Histórico não equivale a cotação atual.";
 }
 function mercadoActivar(){}
 function pintarTab(){
@@ -473,14 +480,28 @@ def header(title, description, status="Ambiente local"):
     )
 
 
+def current_crypto_feeds():
+    now = datetime.now(timezone.utc)
+    active = []
+    for feed in store.list_market_feeds():
+        if feed["provider"] != market_data.PROVIDER or feed["status"] != "connected" or not feed["last_bar_at"]:
+            continue
+        checked = datetime.fromisoformat(feed["checked_at"] + "+00:00")
+        bar_time = datetime.fromisoformat(feed["last_bar_at"].replace("Z", "+00:00"))
+        if (now - checked).total_seconds() < 120 and (now - bar_time).total_seconds() < 180:
+            active.append(feed)
+    return active
+
+
 def topbar(agents, counts):
     indexed = sum(item["status"] == "indexed" for item in store.list_documents())
+    live_count = len(current_crypto_feeds())
     values = [
         ("Agentes", str(len(agents))),
         ("PDFs no índice", str(indexed)),
         ("Tarefas", str(counts["agent_runs"])),
         ("Eventos", str(counts["events"])),
-        ("Feeds", "0 / 2"),
+        ("Feeds cripto", f"{live_count} / 2"),
     ]
     metrics = "".join(
         f'<div class="tal-kpi"><small>{esc(label)}</small><strong>{esc(value)}</strong></div>'
@@ -490,7 +511,7 @@ def topbar(agents, counts):
         '<div class="tal-topbar"><div class="tal-brand"><b>Trading Agent Lab</b>'
         '<span>Escritório de pesquisa · simulação local</span></div>'
         f'<div class="tal-kpis">{metrics}</div>'
-        '<div class="tal-pills"><span class="tal-pill warn">● Sem feed de mercado</span>'
+        f'<div class="tal-pills"><span class="tal-pill warn">● {"Candles cripto atuais" if live_count else "Sem feed de mercado atual"}</span>'
         '<span class="tal-pill safe">Ordens reais bloqueadas</span>'
         '<span class="tal-pill">Modo simulação</span></div></div>',
         unsafe_allow_html=True,
@@ -979,7 +1000,7 @@ def page_controls():
     header("Controle", "Estado das proteções e bloqueios do ambiente. Esta tela não autoriza nem envia ordens.", "MODO LOCAL")
     rows = [
         ("Ordens reais", "Bloqueadas"), ("Conta XP Trader", "Não conectada"),
-        ("Feed de mercado", "Não conectado"), ("Validação de risco", "Limites aguardam configuração"),
+        ("Feed de mercado", f"{len(current_crypto_feeds())} / 2 cripto atuais; ações sem feed"), ("Validação de risco", "Limites aguardam configuração"),
         ("Promoção de aprendizado", "Aprovação humana obrigatória"),
         ("Credenciais", "Não armazenadas no SQLite"),
     ]
@@ -1056,29 +1077,85 @@ def page_backtests(counts):
                              ("EXECUÇÕES", f"{counts['backtests']} persistidas")]
     ) + '</div>', unsafe_allow_html=True)
     st.warning("Importe apenas dados cujo uso você está autorizado a fazer. O nome da fonte é declarado por você e não é validado pelo aplicativo.")
+    with st.expander("Fonte pública BTC e ETH · Binance Spot"):
+        st.caption("Importação explícita de até 1.000 candles fechados de 1 minuto via API pública. BTCUSDT e ETHUSDT são pares spot cotados em USDT; cada captura é um histórico imutável, não uma cotação ao vivo.")
+        crypto_symbol = st.selectbox("Par", market_data.SYMBOLS)
+        if st.button("Buscar e validar histórico público"):
+            try:
+                result = market_data.import_recent(crypto_symbol)
+                st.success(f"Dataset #{result['id']} · {result['metadata']['row_count']} barras · SHA-256 {result['sha256']}")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Falha na importação: {exc}")
+        st.caption("Atualização contínua: execute `python -m services.market_data stream` em um processo local supervisionado. O estado abaixo reflete apenas barras persistidas; sem processo ativo, fica atrasado ou desconectado.")
+    with st.expander("Ações dos EUA · históricos públicos e Alpaca IEX"):
+        st.caption("Amostra histórica pública sem conta: AAPL ou MSFT, barras horárias da Market History. A fonte atualiza historicamente e não oferece tempo real.")
+        public_stock = st.selectbox("Ação para histórico público", market_data.STOCKS)
+        if st.button("Buscar histórico público de ações"):
+            try:
+                result = market_data.import_public_stock_history(public_stock)
+                st.success(f"Dataset #{result['id']} · {result['metadata']['row_count']} barras · SHA-256 {result['sha256']}")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Falha na importação pública: {exc}")
+        st.caption("AAPL e MSFT são candidatos. A fonte IEX cobre uma bolsa, não o mercado consolidado. A importação exige credenciais locais de dados da Alpaca; nenhuma chave é armazenada no SQLite ou digitada nesta página.")
+        if not os.environ.get("ALPACA_API_KEY") or not os.environ.get("ALPACA_API_SECRET"):
+            st.info("Fonte não configurada. Defina ALPACA_API_KEY e ALPACA_API_SECRET no ambiente local para habilitar a importação.")
+        else:
+            stock_symbol = st.selectbox("Ação", market_data.STOCKS)
+            from datetime import datetime, timedelta, timezone
+            stock_end = datetime.now(timezone.utc).replace(microsecond=0)
+            stock_start = stock_end - timedelta(days=3)
+            if st.button("Buscar histórico IEX de três dias"):
+                try:
+                    result = market_data.import_alpaca_stock(stock_symbol, stock_start.isoformat(), stock_end.isoformat())
+                    st.success(f"Dataset #{result['id']} · {result['metadata']['row_count']} barras · SHA-256 {result['sha256']}")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Falha na importação IEX: {exc}")
+    feeds = store.list_market_feeds()
+    if feeds:
+        from datetime import datetime, timezone
+        feed_rows = []
+        for feed in feeds:
+            last = feed["last_bar_at"]
+            checked = datetime.fromisoformat(feed["checked_at"] + "+00:00")
+            fresh = (datetime.now(timezone.utc) - checked).total_seconds() < 120
+            feed_rows.append({"Fonte": feed["provider"], "Par": feed["symbol"],
+                              "Estado": feed["status"] if fresh else "atrasado / processo inativo",
+                              "Última barra UTC": last or "nenhuma",
+                              "Última checagem UTC": feed["checked_at"]})
+        st.dataframe(feed_rows, hide_index=True, width="stretch")
     with st.expander("Importar histórico OHLCV"):
-        st.caption("CSV UTF-8 com timestamp, open, high, low, close e volume. Aceita cabeçalho Date/Datetime para timestamp.")
+        st.caption("CSV UTF-8 com timestamp UTC explícito, open, high, low, close e volume. Aceita cabeçalho Date/Datetime para timestamp.")
         with st.form("dataset-form"):
             upload = st.file_uploader("Arquivo CSV", type=["csv"])
             c1, c2 = st.columns(2)
             with c1:
                 symbol = st.text_input("Símbolo", placeholder="Ex.: ativo informado no arquivo")
-                timeframe = st.text_input("Intervalo das barras", placeholder="Ex.: 5m, declarado pela fonte")
+                timeframe = st.selectbox("Intervalo das barras", ["1m", "2m", "5m", "15m", "1h", "1d"])
             with c2:
+                market = st.selectbox("Mercado", ["crypto", "us_equity"])
                 source = st.text_input("Origem declarada", placeholder="Provedor ou arquivo de origem")
+            c3, c4, c5 = st.columns(3)
+            quote_currency = c3.text_input("Moeda de cotação", placeholder="USDT ou USD")
+            tick_size = c4.text_input("Incremento mínimo", placeholder="0.01")
+            volume_unit = c5.text_input("Unidade de volume", placeholder="BTC ou ações")
+            license_note = st.text_input("Direito de uso / licença da fonte", placeholder="Descreva a autorização e o limite de uso")
             imported = st.form_submit_button("Validar e guardar histórico")
         if imported:
-            if not upload or not all((symbol.strip(), timeframe.strip(), source.strip())):
-                st.error("Selecione o CSV e informe símbolo, intervalo e origem.")
+            if not upload:
+                st.error("Selecione um CSV.")
             else:
                 try:
-                    parsed = parse_ohlcv_csv(upload.getvalue(), upload.name)
-                    dataset_id = store.save_historical_dataset(
-                        parsed["filename"], symbol.strip(), timeframe.strip(), source.strip(),
-                        parsed["sha256"], parsed["bars"],
-                    )
-                    store.add_event("Strategy & Backtest", "INFO", f"Histórico #{dataset_id} importado · {symbol.strip()} · {len(parsed['bars'])} barras · sha256:{parsed['sha256'][:16]}")
-                    st.success(f"{len(parsed['bars'])} barras validadas e guardadas. Origem declarada: {source.strip()}.")
+                    result = dataset_service.import_csv(upload.getvalue(), upload.name, {
+                        "symbol": symbol, "market": market, "provider": source,
+                        "timeframe": timeframe, "timezone": "UTC",
+                        "quote_currency": quote_currency, "tick_size": tick_size,
+                        "volume_unit": volume_unit, "license_note": license_note,
+                    })
+                    store.add_event("Strategy & Backtest", "INFO", f"Histórico #{result['id']} importado · {symbol.strip()} · {result['metadata']['row_count']} barras · sha256:{result['sha256'][:16]}")
+                    st.success(f"{result['metadata']['row_count']} barras validadas e guardadas. Fonte declarada: {source.strip()}.")
                     st.rerun()
                 except Exception as exc:
                     st.error(f"O arquivo não foi guardado: {exc}")
@@ -1088,8 +1165,22 @@ def page_backtests(counts):
         st.markdown("#### Históricos cadastrados")
         st.dataframe([{ "Símbolo": row["symbol"], "Intervalo": row["timeframe"],
                         "Origem declarada": row["source"], "Arquivo": row["filename"],
-                        "Barras": row["row_count"], "SHA-256": row["sha256"][:16] + "…" }
+                        "Barras": row["row_count"],
+                        "Início UTC": json.loads(row["metadata_json"]).get("start_utc", "legado"),
+                        "Fim UTC": json.loads(row["metadata_json"]).get("end_utc", "legado"),
+                        "Lacunas": json.loads(row["metadata_json"]).get("gap_count", "não avaliado"),
+                        "SHA-256": row["sha256"][:16] + "…" }
                       for row in datasets], hide_index=True, width="stretch")
+        selected_dataset = st.selectbox("Reproduzir histórico", datasets,
+                                        format_func=lambda row: f"#{row['id']} · {row['symbol']} · {row['timeframe']}")
+        if st.button("Verificar integridade e reproduzir"):
+            try:
+                restored = dataset_service.load_verified(selected_dataset["id"])
+                st.success(f"Integridade verificada: {len(restored['bars'])} barras; hash canônico {selected_dataset['canonical_sha256'] or 'indisponível (legado)'}.")
+                st.json(restored["metadata"])
+                st.dataframe(restored["bars"], hide_index=True, width="stretch")
+            except ValueError as exc:
+                st.error(str(exc))
 
     st.markdown("#### Criar estratégia versionada")
     st.caption("Modelo disponível: cruzamento de médias móveis simples, posição comprada, sinal no fechamento e preenchimento na abertura seguinte. É um modelo mecânico, não uma recomendação nem um setup extraído dos PDFs.")
@@ -1229,12 +1320,27 @@ def local_lab_main():
 def render_reference():
     source = Path(__file__).with_name("referencia.html")
     reference_html = source.read_text(encoding="utf-8")
+    from datetime import datetime, timezone
+    feed_snapshot = []
+    for feed in store.list_market_feeds():
+        last = store.get_market_bars(feed["provider"], feed["symbol"], feed["timeframe"], limit=1)
+        checked = datetime.fromisoformat(feed["checked_at"] + "+00:00")
+        bar_time = datetime.fromisoformat(feed["last_bar_at"].replace("Z", "+00:00")) if feed["last_bar_at"] else None
+        current = (feed["status"] == "connected" and
+                   (datetime.now(timezone.utc) - checked).total_seconds() < 120 and
+                   bar_time is not None and
+                   (datetime.now(timezone.utc) - bar_time).total_seconds() < 180)
+        feed_snapshot.append({"symbol": feed["symbol"], "provider": feed["provider"],
+                              "effective_status": "connected" if current else "atrasado ou desconectado",
+                              "last_bar_at": feed["last_bar_at"],
+                              "last_close": last[-1]["close"] if last else None})
     snapshot = {
         "agents": store.get_agents(),
         "counts": store.counts(),
         "documents": store.list_documents(),
         "events": store.list_events(limit=200),
         "connections": store.list_connections(),
+        "market_feeds": feed_snapshot,
     }
     payload = json.dumps(snapshot, ensure_ascii=False).replace("</", "<\\/")
     reference_html = reference_html.replace('<html lang="es">', '<html lang="pt-BR">', 1)

@@ -25,7 +25,7 @@ Laboratório local para acompanhar seis agentes de pesquisa intraday, organizar 
 - **REQ-10** — Cobrir fluxos novos com testes; `python main.py test` é a prova automatizada obrigatória.
 - **REQ-11 (superado visualmente por REQ-12)** — Reorganizar visualmente o aplicativo para seguir `referencia.html`: métricas no cabeçalho, navegação e conteúdo em painel lateral, ficha do agente, vistas Sala/Laboratório/Evolução do capital, sala isométrica, resumo de agentes e quadro do diretor. Usar os seis agentes reais em sala de análise e sala de execução separada; manter os recursos locais existentes acessíveis na navegação. A instrução posterior do usuário substitui a proibição de cópia visual.
 - **REQ-12 (superado por REQ-13)** — O modo padrão deveria exibir uma cópia visual e estrutural literal de `referencia.html`. A decisão posterior autoriza localizar a interface e trocar a origem dos dados, mantendo o arquivo de referência intacto.
-- **REQ-13** — Preservar a estrutura visual de `referencia.html`, incluindo sala isométrica, parede de estado e ticker; traduzir todos os rótulos para pt-BR e carregar os seis agentes, estados, documentos, eventos e contagens persistidos em SQLite. Não executar carregadores GitHub/Kraken nem apresentar dados fictícios. Mercado/XP permanecem desconectados; capital, backtest e operações sem registros exibem estados vazios. Em qualquer largura, manter uma única rolagem vertical no documento, sem rolagem horizontal; adaptar a sala para manter seus elementos dentro da viewport. Validar seleção, abas e salas em 1440×1000, 390×844 e 320×740.
+- **REQ-13** — Preservar a estrutura visual de `referencia.html`, incluindo sala isométrica, parede de estado e ticker; traduzir todos os rótulos para pt-BR e carregar os seis agentes, estados, documentos, eventos e contagens persistidos em SQLite. Não executar carregadores GitHub/Kraken nem apresentar dados fictícios. XP permanece desconectada; Mercado mostra somente feeds locais autorizados e identifica frescor/ausência; capital, backtest e operações sem registros exibem estados vazios. Em qualquer largura, manter uma única rolagem vertical no documento, sem rolagem horizontal; adaptar a sala para manter seus elementos dentro da viewport. Validar seleção, abas e salas em 1440×1000, 390×844 e 320×740.
 
 ## Contratos técnicos
 
@@ -48,6 +48,13 @@ Laboratório local para acompanhar seis agentes de pesquisa intraday, organizar 
 
 - **REQ-15** — VBS, VSS, BOP e BDP foram selecionados pelo usuário. As regras v1 têm parâmetros operacionais aprovados em 13/11/2026, versões imutáveis e fontes PDF com hash. O motor de sinais usa apenas barras já fechadas. O backtest dos quatro padrões pertence à Entrega 5.
 - **TRD-07** — `services/setup_specs.py` define e registra versões; `services/setup_signals.py` detecta sinais sem executar operações. O SQLite preserva rascunhos v1 e versões aprovadas v2. Incremento mínimo, custos e horário dependem dos metadados do histórico da Entrega 4.
+
+## Entrega 4 — dados históricos e atualização contínua
+
+- **REQ-16** — Importações OHLCV possuem manifesto de mercado, fonte, símbolo, intervalo, fuso UTC, moeda, incremento mínimo, unidade de volume e direito de uso declarado; hash do arquivo e hash canônico das barras permitem reprodução. Histórico importado é um snapshot imutável. Lacunas ficam explícitas.
+- **REQ-17** — BTCUSDT e ETHUSDT usam dados públicos Binance Spot para snapshots e candles fechados em WebSocket, com reconexão e backfill. O processo coletor deve ser iniciado explicitamente e supervisionado para operação contínua. A interface mostra estado/idade persistidos; não confunde histórico com cotação atual.
+- **REQ-18** — AAPL e MSFT possuem amostras horárias históricas públicas Market History, sem conta; são fonte histórica, não feed em tempo real. O conector opcional Alpaca IEX exige credenciais de dados no ambiente local e ação explícita. IEX não representa o mercado consolidado. Sem credenciais, manter a Alpaca desconectada; nenhuma chave em SQLite/logs. Streaming de ações depende de implementação e validação posteriores.
+- **TRD-08** — `services/datasets.py` valida manifesto e integridade; `services/market_data.py` acessa fontes externas mediante ação explícita. `database/store.py` é o único acesso a SQLite. O coletor é separado da interface e não possui função de negociação.
 
 ## Contrato visual e rastreabilidade
 

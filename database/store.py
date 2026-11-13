@@ -166,6 +166,11 @@ def initialize():
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        dataset_columns = {row[1] for row in conn.execute("PRAGMA table_info(historical_datasets)")}
+        if "metadata_json" not in dataset_columns:
+            conn.execute("ALTER TABLE historical_datasets ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'")
+        if "canonical_sha256" not in dataset_columns:
+            conn.execute("ALTER TABLE historical_datasets ADD COLUMN canonical_sha256 TEXT")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS historical_bars (
                 dataset_id INTEGER NOT NULL REFERENCES historical_datasets(id) ON DELETE CASCADE,
@@ -176,6 +181,22 @@ def initialize():
                 close REAL NOT NULL,
                 volume REAL NOT NULL,
                 PRIMARY KEY(dataset_id,timestamp)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS market_bars (
+                provider TEXT NOT NULL, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
+                timestamp TEXT NOT NULL, open REAL NOT NULL, high REAL NOT NULL,
+                low REAL NOT NULL, close REAL NOT NULL, volume REAL NOT NULL,
+                received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(provider,symbol,timeframe,timestamp)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS market_feeds (
+                provider TEXT NOT NULL, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
+                status TEXT NOT NULL, last_bar_at TEXT, checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                error TEXT, PRIMARY KEY(provider,symbol,timeframe)
             )
         """)
         conn.execute("""
@@ -513,16 +534,21 @@ def list_backtests():
         ).fetchall()]
 
 
-def save_historical_dataset(filename, symbol, timeframe, source, sha256, bars):
+def save_historical_dataset(filename, symbol, timeframe, source, sha256, bars,
+                            metadata=None, canonical_sha256=None):
+    metadata_json = json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True)
     with connect() as conn:
         conn.execute("""
-            INSERT OR IGNORE INTO historical_datasets(filename,symbol,timeframe,source,sha256,row_count)
-            VALUES(?,?,?,?,?,?)
-        """, (filename, symbol, timeframe, source, sha256, len(bars)))
+            INSERT OR IGNORE INTO historical_datasets
+                (filename,symbol,timeframe,source,sha256,row_count,metadata_json,canonical_sha256)
+            VALUES(?,?,?,?,?,?,?,?)
+        """, (filename, symbol, timeframe, source, sha256, len(bars), metadata_json, canonical_sha256))
         existing = conn.execute(
-            "SELECT id,symbol,timeframe,source FROM historical_datasets WHERE sha256=?", (sha256,)
+            "SELECT id,symbol,timeframe,source,metadata_json,canonical_sha256 FROM historical_datasets WHERE sha256=?", (sha256,)
         ).fetchone()
-        if (existing["symbol"], existing["timeframe"], existing["source"]) != (symbol, timeframe, source):
+        if (existing["symbol"], existing["timeframe"], existing["source"],
+            existing["metadata_json"], existing["canonical_sha256"]) != (
+                symbol, timeframe, source, metadata_json, canonical_sha256):
             raise ValueError("Este hash já está registrado com outro símbolo, período ou origem.")
         dataset_id = existing["id"]
         conn.executemany("""
@@ -546,6 +572,57 @@ def get_historical_bars(dataset_id):
             "SELECT timestamp,open,high,low,close,volume FROM historical_bars "
             "WHERE dataset_id=? ORDER BY timestamp", (dataset_id,)
         ).fetchall()]
+
+
+def upsert_market_bar(provider, symbol, timeframe, bar):
+    with connect() as conn:
+        conn.execute("""
+            INSERT INTO market_bars(provider,symbol,timeframe,timestamp,open,high,low,close,volume)
+            VALUES(?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(provider,symbol,timeframe,timestamp) DO UPDATE SET
+                open=excluded.open, high=excluded.high, low=excluded.low,
+                close=excluded.close, volume=excluded.volume,
+                received_at=CURRENT_TIMESTAMP
+        """, (provider, symbol, timeframe, bar["timestamp"], bar["open"],
+              bar["high"], bar["low"], bar["close"], bar["volume"]))
+
+
+def upsert_market_bars(provider, symbol, timeframe, bars):
+    with connect() as conn:
+        conn.executemany("""
+            INSERT INTO market_bars(provider,symbol,timeframe,timestamp,open,high,low,close,volume)
+            VALUES(?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(provider,symbol,timeframe,timestamp) DO UPDATE SET
+                open=excluded.open, high=excluded.high, low=excluded.low,
+                close=excluded.close, volume=excluded.volume,
+                received_at=CURRENT_TIMESTAMP
+        """, [(provider, symbol, timeframe, bar["timestamp"], bar["open"],
+               bar["high"], bar["low"], bar["close"], bar["volume"]) for bar in bars])
+
+
+def update_market_feed(provider, symbol, timeframe, status, last_bar_at=None, error=None):
+    with connect() as conn:
+        conn.execute("""
+            INSERT INTO market_feeds(provider,symbol,timeframe,status,last_bar_at,error)
+            VALUES(?,?,?,?,?,?)
+            ON CONFLICT(provider,symbol,timeframe) DO UPDATE SET
+                status=excluded.status, last_bar_at=COALESCE(excluded.last_bar_at,market_feeds.last_bar_at),
+                checked_at=CURRENT_TIMESTAMP, error=excluded.error
+        """, (provider, symbol, timeframe, status, last_bar_at, error))
+
+
+def list_market_feeds():
+    with connect() as conn:
+        return [dict(row) for row in conn.execute("SELECT * FROM market_feeds ORDER BY provider,symbol")]
+
+
+def get_market_bars(provider, symbol, timeframe, limit=1000):
+    with connect() as conn:
+        rows = conn.execute("""
+            SELECT timestamp,open,high,low,close,volume FROM market_bars
+            WHERE provider=? AND symbol=? AND timeframe=? ORDER BY timestamp DESC LIMIT ?
+        """, (provider, symbol, timeframe, limit)).fetchall()
+        return [dict(row) for row in reversed(rows)]
 
 
 def approve_strategy(strategy_id):
