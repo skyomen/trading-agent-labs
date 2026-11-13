@@ -249,7 +249,7 @@ function pintarSala(){
   var risk=D.agentes.find(function(a){return a.nome==="Risk Manager";}),riskText=risk?risk.status:"Estado de risco não cadastrado";
   var eventTime=latest?localTickerTime(latest["Horário"]):"--:--",eventActor=latest?(latest.Agente==="Trading Lab"?"Sistema":latest.Agente):"Sem eventos";
   var eventMessage=latest?resumoEvento(latest.Atividade):"Sem atividade registrada";
-  var led='<g transform="translate('+(A[0]+52)+','+(A[1]-HM+24)+') skewY(26.565)">';
+  var led='<g transform="translate('+(A[0]+95)+','+(A[1]-HM+24)+') skewY(26.565)">';
   led+='<rect x="-8" y="-8" width="346" height="102" rx="6" fill="#0a0d12" stroke="#33415a"/>';
   var saldo=saldoRealizado(),saldoColor=saldo.hasClosed?(saldo.total>=0?"#42d392":"#ff6f61"):"#8d9aab",saldoLabel=saldo.hasClosed?((saldo.total>=0?"+":"")+saldo.total.toFixed(2)+" SALDO"):"SEM OPERAÇÕES",saldoFont=saldoLabel.length>10?20:30;
   led+='<text x="4" y="30" font-family="Doto,monospace" font-weight="900" font-size="'+saldoFont+'" fill="'+saldoColor+'">'+localText(saldoLabel)+'</text>';
@@ -259,7 +259,7 @@ function pintarSala(){
   var tickerWidth=ticker.length*8.4+340;
   led+='<g clip-path="url(#led)"><g class="ticker" style="--fin:-'+Math.round(tickerWidth)+'px;--dur:'+Math.max(24,Math.round(tickerWidth/38))+'s"><text x="340" y="78" font-family="Doto,monospace" font-weight="700" font-size="15" fill="#f6c97a" xml:space="preserve">'+localText(ticker+"     "+ticker)+'</text></g></g>';
   s+=led+'</g>';
-  var left='<g transform="translate('+(Dd[0]+40)+','+(Dd[1]-HM+20)+') skewY(-26.565)">';
+  var left='<g transform="translate('+(Dd[0]+18)+','+(Dd[1]-HM+20)+') skewY(-26.565)">';
   left+='<rect x="0" y="0" width="150" height="64" rx="6" fill="#121923" stroke="#33415a"/>';
   left+='<text x="12" y="20" font-family="Archivo,sans-serif" font-size="11" fill="#8d9aab">Último evento</text>';
   left+='<text x="12" y="44" font-family="Doto,monospace" font-weight="900" font-size="22" fill="#e9eef4">'+localText(eventTime)+'</text>';
