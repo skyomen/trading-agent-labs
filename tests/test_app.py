@@ -101,7 +101,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("cortar(a.status,13)", rendered)
         self.assertIn("function pintarSalaCompacta()", rendered)
         self.assertIn("wrapSvgText(a.status,27)", rendered)
-        self.assertIn('viewBox","0 0 390 660"', rendered)
+        self.assertIn('floor.setAttribute("viewBox","0 0 390 "+alto)', rendered)
         self.assertIn('width="358" height="23"', rendered)
         self.assertIn('width="166" height="49"', rendered)
         self.assertIn("overflow-x:hidden!important;overflow-y:auto!important", rendered)
@@ -116,6 +116,47 @@ class DashboardTests(unittest.TestCase):
         self.assertIn(".salaw{width:calc(100% - 24px)!important", rendered)
         self.assertIn("#floor{display:block;width:100%!important;min-width:0!important", rendered)
         self.assertEqual(iframe.proto.alt, "Trading Agent Lab, painel local de análise em simulação")
+
+    def test_default_portal_separates_analyst_room_from_execution_desk(self):
+        """AppTest não roda o JS do portal; o que se verifica aqui é a fonte embutida."""
+        app = AppTest.from_file(str(APP_PATH)).run()
+
+        self.assertFalse(app.exception, [item.message for item in app.exception])
+        rendered = app.get("iframe")[0].proto.srcdoc
+        self.assertIn('VIEW="sala", START=0, ROOM="Analistas"', rendered)
+        self.assertIn('function salaDoAgente(a){return a&&a.nome==="Execution Agent"'
+                      '?"Execução":"Analistas";}', rendered)
+        self.assertIn("function agentesDaSala()", rendered)
+        self.assertIn('data-room="Analistas"', rendered)
+        self.assertIn('data-room="Execução"', rendered)
+        self.assertIn('b.setAttribute("aria-pressed",b.dataset.room===ROOM?"true":"false")', rendered)
+        self.assertIn('" de execução · recepção bloqueada"', rendered)
+        self.assertIn('" de análise"', rendered)
+        self.assertIn("POSTO DE EXECUÇÃO", rendered)
+        self.assertIn("MESAS DE ANÁLISE", rendered)
+        self.assertIn('var floor=$("floor"),roomAgents=agentesDaSala()', rendered)
+        self.assertIn("var list=roomAgents.map(", rendered)
+        self.assertIn('var floor=$("floor"),agents=agentesDaSala()', rendered)
+        self.assertIn('var seletor=$("roomsel"); if(seletor)seletor.style.display='
+                      'isMarket||!sala?"none":"";', rendered)
+        self.assertNotIn("var slots=[[18,250],[202,250]", rendered)
+
+    def test_default_portal_room_switch_keeps_selection_and_blocked_orders_notice(self):
+        """Trocar de sala não pode deixar a ficha num agente fora da sala visível."""
+        app = AppTest.from_file(str(APP_PATH)).run()
+
+        self.assertFalse(app.exception, [item.message for item in app.exception])
+        rendered = app.get("iframe")[0].proto.srcdoc
+        self.assertIn("var atual=D.agentes[SEL];", rendered)
+        self.assertIn("if(!atual||salaDoAgente(atual)!==ROOM){var primeiro=agentesDaSala()[0];"
+                      "if(primeiro)SEL=primeiro.i;}", rendered)
+        self.assertIn("function selecionar(i){SEL=i;var a=D.agentes[i];"
+                      "if(a)ROOM=salaDoAgente(a);", rendered)
+        self.assertIn("pintarRanking();pintarSala();pintarVistazo();pintarFicha();pintarSeletorSala();",
+                      rendered)
+        self.assertIn("'<div class=\"gh\"><b>Estado dos agentes</b><span>'+D.agentes.length", rendered)
+        self.assertIn('T(20,160,"Ordens reais bloqueadas",10,"#aab8c8")', rendered)
+        self.assertIn("SOMENTE SIMULAÇÃO", rendered)
 
     def test_default_portal_embeds_persisted_event_history_without_fake_operations(self):
         store.add_event("Risk Manager", "NOTICE", "Revisão local aguardando aprovação")
