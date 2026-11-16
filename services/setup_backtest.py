@@ -150,6 +150,23 @@ def verify_approved_rules(strategy, timeframe):
     return {**rules, "tested_timeframe": timeframe}
 
 
+def verify_source_documents(rules):
+    """Raise if any source PDF behind `rules` is no longer indexed with the approved hash.
+
+    Shared provenance gate: checks every entry in `rules["source"]` against the
+    current library status (`documents.library_status()`), refusing anything
+    that is missing, stale or indexed under a different hash. Pure verification,
+    no side effect — reused by `prepare_verified_run` here and, from Phase 2
+    onward, by `services/pipeline.py` (which has no dataset hash to check, only
+    the live feed, but still needs this same PDF-provenance check).
+    """
+    current = {item["path"]: item for item in documents.library_status()}
+    for source in rules["source"]:
+        entry = current.get(source["path"], {})
+        if entry.get("status") != "indexed" or entry.get("record", {}).get("sha256") != source["sha256"]:
+            raise ValueError("PDF de origem ausente, alterado ou sem índice atual: " + source["path"])
+
+
 def prepare_verified_run(strategy, dataset_id, timeframe, rules=None):
     """Single provenance gate shared by every engine that reads approved setups.
 
@@ -159,11 +176,7 @@ def prepare_verified_run(strategy, dataset_id, timeframe, rules=None):
     caller decides how to aggregate or split them; no simulation happens here.
     """
     rules = rules or verify_approved_rules(strategy, timeframe)
-    current = {item["path"]: item for item in documents.library_status()}
-    for source in rules["source"]:
-        entry = current.get(source["path"], {})
-        if entry.get("status") != "indexed" or entry.get("record", {}).get("sha256") != source["sha256"]:
-            raise ValueError("PDF de origem ausente, alterado ou sem índice atual: " + source["path"])
+    verify_source_documents(rules)
     restored = datasets.load_verified(dataset_id)
     row, metadata = restored["dataset"], restored["metadata"]
     if not row["canonical_sha256"] or metadata.get("market") != "crypto" or row["timeframe"] != "1m":

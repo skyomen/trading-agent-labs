@@ -88,6 +88,22 @@ flowchart LR
 
 O caminho normal de persistência passa por `database/store.py`. A UI chama serviços para as operações especializadas; a UI não abre uma conexão de mercado. A camada de documentos lê os PDFs locais e guarda índice e trechos no SQLite. O serviço de agentes só acessa o provedor durante a execução explícita de uma tarefa configurada.
 
+### Pipeline de orquestração de agentes (Entrega 7)
+
+`services/pipeline.py` encadeia automaticamente 7 estágios sobre o feed ao vivo (`market_bars`), sem exigir clique por etapa, e persiste a trilha completa mesmo quando um estágio não roda:
+
+| # | Estágio | Natureza | Fonte |
+|---|---|---|---|
+| 1 | Market | serviço (`services/market_data.py`) | feed ao vivo Binance (`market_bars`) |
+| 2 | Knowledge | serviço — Research Agent é a fonte | `knowledge_items` aprovados |
+| 3 | Backtest Evidence | serviço, reaproveita Entregas 5/6 | `services/setup_backtest.py`, `services/validation.py` |
+| 4 | Fundamental | agente existente (Fundamental Analyst) | sem fonte integrada (sempre `sem_fonte`) |
+| 5 | Decision | serviço determinístico (`services/decision.py`) | combina os estágios 1–4; nunca vira registro em `agents` |
+| 6 | Risk | agente existente (Risk Manager), `services/risk.py` | parâmetros de projeto (1R/3R/2 posições) + proveniência por campo |
+| 7 | Execution | agente existente (Execution Agent), `services/execution.py` | portão humano de quantidade → `paper_operations` |
+
+Decision e Knowledge nunca ganham registro próprio em `agents`/tela Sala: são função/serviço interno ao pipeline (decisão do usuário, não inflar a lista de agentes). A idempotência é por barra de sinal: `(strategy_id, symbol, timeframe, signal_bar_utc)` é `UNIQUE` em `pipeline_runs`, então reavaliar a mesma barra nunca produz uma segunda trilha. Execution para no portão humano (`status='aguardando_quantidade'`) até alguém informar a quantidade na tela; só então `services/execution.confirm_open` abre a posição real em `paper_operations`. Fechamento e cálculo de P&L ficam fora do escopo desta entrega. Detalhe completo da decisão: `../_capsule/decisoes/DEC-2026-11-16-escopo-entrega-7-orquestracao.md`.
+
 ## 5. Interface e áreas disponíveis
 
 ### 5.1 Portal padrão
@@ -98,7 +114,7 @@ O portal mostra cabeçalho/métricas, navegação lateral, vistas de sala, lista
 
 ### 5.2 Laboratório (`?lab=1`)
 
-O laboratório oferece cinco áreas de navegação e três vistas de espaço de trabalho:
+O laboratório oferece cinco áreas de navegação e quatro vistas de espaço de trabalho:
 
 | Área | O que faz / estado atual |
 |---|---|
@@ -112,6 +128,7 @@ As vistas do espaço de trabalho são:
 
 - **Sala:** sala de analistas com cinco postos e sala de execução separada com um posto. A estação de execução só seleciona `Execution Agent`; a recepção de ordens permanece bloqueada. Desktop e variante compacta são renderizados por SVG local.
 - **Laboratório:** cadastro/revisão/aprovação de estratégias e importação/execução de backtest histórico.
+- **Orquestração (Entrega 7):** avalia automaticamente, ao abrir a aba, cada estratégia aprovada × símbolo elegível × timeframe do próprio setup sobre o feed ao vivo, com botão "Avaliar agora" para forçar nova checagem. Mostra a trilha de 7 estágios, o veredito do Risk Manager com a proveniência de cada checagem e o portão humano de quantidade (abrir posição simulada ou descartar candidato) para cada run `aguardando_quantidade`. Lista o histórico completo de runs com estágios, checagens de risco e relatório JSON para auditoria.
 - **Evolução do capital:** baseada somente em operações simuladas encerradas; não infere capital inicial. Sem registros, mostra estado vazio.
 
 A interface segue o tema escuro fixo da referência, tem uma rolagem vertical do documento e adapta a sala para caber na largura disponível. A sala mantém suas mesas legíveis e não cria uma rolagem horizontal na página.
@@ -163,7 +180,9 @@ O arquivo é `database/trading.db`; `database/store.py` configura `sqlite3.Row`,
 | `market_feeds` | Estado de conexão, último candle, última verificação e erro; a interface considera o registro atrasado quando o coletor não atualiza. |
 | `historical_bars` | OHLCV histórico por dataset e timestamp; dataset + timestamp são chave primária. |
 | `backtests` | Estratégia, ativo, intervalo, origem/hash dos dados, métricas JSON, estado e data. |
-| `paper_operations` | Operações simuladas, lado, quantidade, preços, custo, fonte e estado aberto/encerrado/cancelado. |
+| `paper_operations` | Operações simuladas, lado, quantidade, preços, custo, fonte, estado aberto/encerrado/cancelado e `pipeline_run_id` (Entrega 7) ligando a posição à trilha que a autorizou. |
+| `pipeline_runs` (Entrega 7) | Uma linha por barra de sinal avaliada — `UNIQUE(strategy_id, symbol, timeframe, signal_bar_utc)` garante que a mesma barra nunca gera uma segunda trilha. Guarda decisão, veredito de risco, status do portão humano (`aguardando_quantidade`/`posicao_aberta`/`expirado`/...), risco comprometido (`risk_committed_r`), `pending_since` (início da janela de ~15 min de expiração) e o relatório completo em `report_json`. |
+| `pipeline_stages` (Entrega 7) | Um registro por estágio (1 a 7) por run, mesmo quando o estágio não roda (`nao_aplicavel`/`nao_executado`), com agente, status, resumo, entrada/saída (`input_json`/`output_json`) e limitações (`limitations_json`) para auditoria completa. |
 | `connections` | Provedor/estado/metadados de conectores, sem campo de chave secreta. |
 
 ### Snapshot consultado em 13/11/2026, após a Entrega 2
@@ -345,6 +364,7 @@ O comando de prova do projeto é `python main.py test`. Na Entrega 2, 35 testes 
 - Painéis vazios/desconectados para mercado, capital, operações e integrações ausentes.
 - Separação visual da sala de execução, bloqueio de ordens reais e layout responsivo da referência.
 - Validation Engine com corte temporal causal treino/out-of-sample, grade fixa de custo, concentração pelo melhor trade e rótulo de adequação da amostra persistido em `validation_runs`, refletido nos dois modos de portal.
+- Orquestração automática de agentes (Entrega 7): pipeline de 7 estágios (Market → Knowledge → Backtest Evidence → Fundamental → Decision → Risk → Execution) disparado sozinho ao abrir a aba Orquestração, com trilha auditável persistida em `pipeline_runs`/`pipeline_stages`, Risk Manager com parâmetros de projeto (1R por trade, 3R de perda diária, 2 posições simultâneas) e portão humano de quantidade que abre posição real em `paper_operations`.
 
 ### Ainda não conectado, sem dados ou dependente de decisão
 
@@ -356,8 +376,29 @@ O comando de prova do projeto é `python main.py test`. Na Entrega 2, 35 testes 
 - Comparar períodos e procurar degradação, itens da seção 10 do roadmap deixados explicitamente fora da Entrega 6: ambos exigem várias janelas longas e independentes que o histórico atual não oferece. Dependem de coleta contínua mais longa, não de implementação.
 - Revisar manualmente conceitos e setups propostos; aprovação não formaliza estratégia executável nem autoriza backtest ou operação.
 - Registrar execuções de agentes e avaliar seus resultados somente depois que o provedor e o contexto estiverem autorizados.
+- `mercado_fora_das_regras` (`filters.session_hours`) permanece sem fonte definida de mercado/fuso; na trilha da Entrega 7 ele fica marcado `nao_aplicavel` e nunca bloqueia nem libera nada.
+- O estágio Fundamental da Entrega 7 está sempre `sem_fonte`: nenhuma fonte de notícias/eventos foi integrada ao projeto.
+- Fechamento de posição e cálculo de P&L ficam fora do escopo da Entrega 7; ela só abre a posição simulada em `paper_operations`, sem rotina de acompanhamento/saída automática.
 
 ## 17. Rastreabilidade
+
+### Entrega 7: Agent Orchestration
+
+A decisão completa está em `../_capsule/decisoes/DEC-2026-11-16-escopo-entrega-7-orquestracao.md`; o que segue resume fielmente os pontos relevantes para quem lê só esta referência.
+
+**Disparo e papéis.** Uma oportunidade simulada dispara, sem clique por etapa, a sequência `Market → Knowledge → Backtest Evidence → Fundamental → Decision → Risk → Execution`. Decision (`services/decision.py`) e Knowledge nunca ganham registro próprio em `agents`/tela Sala — são serviço/função interno ao pipeline (`services/pipeline.py`), não agente novo; o Research Agent continua sendo a fonte de "Knowledge". Market, Fundamental, Risk e Execution reaproveitam os agentes já existentes.
+
+**Dois módulos de schema, dois de serviço reaproveitado.** `database/store.py` ganhou as tabelas `pipeline_runs` e `pipeline_stages` (seção 7) por migração aditiva/idempotente, e a coluna `pipeline_run_id` em `paper_operations`. `services/pipeline.py` orquestra os 7 estágios; `services/decision.py` e `services/risk.py` são serviço determinístico; `services/execution.py` monta o plano só quando o Risk autoriza e expõe o portão humano. `verify_source_documents` foi extraída de dentro de `prepare_verified_run` (`services/setup_backtest.py`), sem mudar nenhum comportamento existente, para ser reaproveitada aqui — o pipeline não tem hash de dataset (só o feed ao vivo), mas ainda precisa confirmar que os PDFs de origem continuam indexados com o mesmo hash aprovado.
+
+**Fonte do sinal: feed ao vivo, não snapshot.** O usuário escolheu explicitamente `market_bars`/o coletor Binance como fonte do sinal, em vez do snapshot histórico verificado por hash (a opção recomendada). Aceita-se a barra mais recente do coletor como está, sem checagem adicional de integridade (sem verificação de lacuna/atraso): se o coletor cair ou atrasar, a trilha fica sem sinal novo até ele voltar — é por isso que `run_pipeline` pode retornar `sem_feed`/`historico_insuficiente` em vez de produzir uma trilha, sem que isso seja um erro.
+
+**Risco como parâmetro de projeto.** Duas investigações nos PDFs do método Oliver Velez (chunks indexados; depois leitura exaustiva das 311+9 páginas) confirmaram ausência de qualquer camada de money management, position sizing, R múltiplo numérico, drawdown ou exposição de portfólio. O Risk Manager (`services/risk.py`) combina, por campo, proveniência "do método" (stop/alvo/trailing de `rules_json`, status de estratégia aprovada) com proveniência "parâmetro de projeto": risco por trade = 1R, perda diária máxima = 3R, exposição máxima = 2 posições simultâneas — valores aprovados pelo usuário em 16/11/2026, não extraídos do método, sujeitos a revisão humana futura. A perda diária vale por comprometido (toda autorização soma 1R ao orçamento do dia, mesmo sem desfecho real, e nunca é devolvida); a exposição reservada conta posições abertas mais autorizações ainda `aguardando_quantidade`. `mercado_fora_das_regras` (`filters.session_hours`) permanece sem fonte e fica `nao_aplicavel`, nunca bloqueando nem liberando. Amostra de validação insuficiente/limítrofe (Entrega 6) nunca bloqueia o candidato — aparece só como fator contrário obrigatório na Decision.
+
+**Execução abre posição real, com quantidade humana.** Quando o Risk autoriza, a UI apresenta o plano (ativo, lado, entrada, stop, alvo, 1R) e pede a quantidade ao usuário — decisão explícita do usuário de tornar a simulação mais concreta do que a alternativa inicialmente recomendada (registrar só a intenção, sem gravar em `paper_operations`). Só então `services/execution.confirm_open` abre a posição de verdade (`paper_operations`, `state='open'`, `pipeline_run_id` preenchido), revalidando a exposição por guarda TOCTOU e usando o preço de entrada congelado na trilha, nunca o preço de mercado corrente. O custo de abertura é zero, com aviso explícito de que os custos serão registrados no fechamento. Uma autorização pendente expira sozinha em ~15 minutos (`pending_since`); `services/execution.discard` descarta um candidato pendente por escolha do usuário. **Fechamento, acompanhamento de stop/alvo e cálculo de P&L ficam fora do escopo desta entrega** — são trabalho de entregas futuras; o app só funciona como trader de ponta a ponta quando essa cadeia completa estiver concluída.
+
+**Limitações conhecidas.** `filters.session_hours` (motivo `mercado_fora_das_regras`) segue sem definição de mercado/fuso, herdada de `DEC-2026-11-13-primeiros-quatro-setups.md`. O estágio Fundamental nunca tem fonte própria integrada ao projeto. As 16 combinações aprovadas continuam rotuladas `insuficiente` pela Validation Engine (Entrega 6) — isso é informativo, não bloqueante. Fechamento de posição e P&L seguem fora de escopo.
+
+**Provas.** `python main.py test` com a suíte completa (contagem registrada na run desta entrega). `python -m scripts.run_delivery7` demonstra o critério de aceite — avaliação automática de cada estratégia aprovada × símbolo elegível × timeframe do próprio setup, com a trilha completa quando há feed/sinal, ou os estados explícitos `sem_feed`/`historico_insuficiente`/`sem_barra_nova` quando não há; o modo de confirmação (`--abrir`/`--quantidade`, `--descartar`) exercita o portão humano. Rodar a avaliação duas vezes seguidas não duplica nenhuma trilha.
 
 ### Entrega 6: Validation Engine
 

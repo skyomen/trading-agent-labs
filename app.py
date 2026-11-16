@@ -19,7 +19,9 @@ from database import store
 from services import documents
 from services import knowledge as knowledge_service
 from services import datasets as dataset_service
+from services import execution as execution_service
 from services import market_data
+from services import pipeline as pipeline_service
 from services.agents import provider_summary, run_agent_task
 from services.backtest import parse_ohlcv_csv, run_sma_crossover
 from services.setup_backtest import run_approved as run_approved_setup
@@ -47,11 +49,14 @@ function T(x,y,text,size,fill,extra){return '<text x="'+x+'" y="'+y+'" font-size
 function cortar(text,n){text=String(text);return text.length>n?text.slice(0,n-1)+"…":text;}
 function caja(u,v,du,dv,h,top,side1,side2){var a=P(u-du/2,v-dv/2),b=P(u+du/2,v-dv/2),c=P(u+du/2,v+dv/2),d=P(u-du/2,v+dv/2);return poly([b,c,sube(c,h),sube(b,h)],side2)+poly([d,c,sube(c,h),sube(d,h)],side1)+poly([sube(a,h),sube(b,h),sube(c,h),sube(d,h)],top);}
 function kpi(label,value){return '<div class="kpi"><small>'+label+'</small><strong>'+value+'</strong></div>';}
-var LOCAL = window.TAL_DATA || {agents:[], counts:{}, documents:[], events:[], connections:[], market_feeds:[], historical_datasets:[], paper_operations:[], backtests:[], validation_runs:[]};
+var LOCAL = window.TAL_DATA || {agents:[], counts:{}, documents:[], events:[], connections:[], market_feeds:[], historical_datasets:[], paper_operations:[], backtests:[], validation_runs:[], pipeline_runs:[], pipeline_pendencias:0};
 var ADEQUACY_TEXT = {insuficiente:"amostra insuficiente", limitrofe:"amostra limítrofe", adequada:"amostra adequada"};
 function localAdequacy(value){ return ADEQUACY_TEXT[String(value||"")] || "amostra não rotulada"; }
 function validacoes(){ return LOCAL.validation_runs || []; }
 function validacoesInsuficientes(){ return validacoes().filter(function(v){return v.sample_adequacy==="insuficiente";}).length; }
+function trilhas(){ return LOCAL.pipeline_runs || []; }
+function trilhasNegadas(){ return trilhas().filter(function(t){return t.risk_verdict==="negado";}).length; }
+function pipelinePendencias(){ return LOCAL.pipeline_pendencias||0; }
 function feedAtual(){return (LOCAL.market_feeds||[]).filter(function(f){return f.effective_status==="connected";});}
 function feedResumo(){var n=feedAtual().length;return n?n+" feed(s) cripto de candles fechados":"Sem feed de mercado atual";}
 function saldoRealizado(){
@@ -93,7 +98,9 @@ function pintarRanking(){
 }
 function pintarOps(){
   var events=LOCAL.events||[], operations=LOCAL.paper_operations||[];
-  var paper='<div class="sec">Operações simuladas registradas</div>'+(operations.length?operations.map(function(o){
+  var pend=pipelinePendencias();
+  var pendBlock=pend>0?'<p class="local-flag">'+pend+' autorizaç'+(pend===1?'ão':'ões')+' aguardando quantidade — informe a quantidade no laboratório completo (<a href="/?lab=1" target="_blank" rel="noopener">?lab=1</a>).</p>':'';
+  var paper='<div class="sec">Operações simuladas registradas</div>'+pendBlock+(operations.length?operations.map(function(o){
     return '<div class="item local-activity"><time>'+localText(o.created_at)+'</time><span><b>#'+localText(o.id)+' · '+localText(o.symbol)+' · '+localText(o.side)+'</b><br>'+localText(o.state)+' · '+localText(o.quantity)+' unidades · origem: '+localText(o.source)+'</span></div>';
   }).join(""):'<p class="local-empty">Nenhuma operação simulada conciliada no SQLite. Backtests não são operações de conta.</p>');
   $("p-ops").innerHTML=paper+'<div class="sec">Atividade registrada</div>'+(events.length?events.map(function(e){
@@ -104,12 +111,15 @@ function pintarOps(){
 function pintarInforme(){
   var c=LOCAL.counts, docs=LOCAL.documents.filter(function(d){return d.status==="indexed";}).length;
   var current=feedAtual().length;
+  var negadas=trilhasNegadas();
   $("p-inf").innerHTML='<div class="sec">Estado do laboratório</div>'+[
     ["Agentes cadastrados",c.agents||0],["Tarefas de agentes executadas",c.agent_runs||0],["Documentos indexados",docs],
     ["Estratégias registradas",c.strategies||0],["Backtests registrados",c.backtests||0],["Snapshots históricos",c.historical_datasets||0],
     ["Feeds cripto atuais",current],["Operações simuladas",c.paper_operations||0],
-    ["Validações executadas",validacoes().length],["Validações com amostra insuficiente",validacoesInsuficientes()]
+    ["Validações executadas",validacoes().length],["Validações com amostra insuficiente",validacoesInsuficientes()],
+    ["Trilhas de decisão executadas",trilhas().length]
   ].map(function(x){return '<div class="local-metric"><span>'+localText(x[0])+'</span><b>'+x[1]+'</b></div>';}).join("")+
+  '<div class="local-metric"><span>Trilhas negadas pelo risco</span><b class="'+(negadas?'local-flag-inline':'')+'">'+negadas+'</b></div>'+
   (validacoes().length?'<p class="local-flag">'+validacoesInsuficientes()+' de '+validacoes().length+' validações estão rotuladas como amostra insuficiente: sem conclusão de robustez ou lucratividade.</p>':'')+
   '<p class="note">Contagens do SQLite local. Alpaca IEX: '+(LOCAL.alpaca_configured?'credenciais presentes; importação histórica manual':'credenciais ausentes')+'. Backtests não são operações; agentes só executam tarefas iniciadas pelo usuário.</p>';
 }
@@ -315,12 +325,28 @@ function blocoValidacao(){
   }).join("");
   return head+alerta+rows;
 }
+function blocoTrilha(){
+  var runs=trilhas();
+  if(!runs.length) return '<div class="sec">Orquestração de agentes</div><p class="local-empty">Nenhuma trilha de decisão avaliada ainda. O pipeline encadeia Market → Knowledge → Backtest Evidence → Fundamental → Decision → Risk → Execution sobre o feed ao vivo.</p>';
+  var negadas=trilhasNegadas();
+  var head='<div class="sec">Orquestração de agentes</div><div class="local-band"><b>'+runs.length+' trilhas avaliadas</b><span>'+negadas+' negadas pelo risco</span></div>';
+  var rows=runs.map(function(t){
+    var label=(t.setup_name?t.setup_name+' · ':'')+t.symbol+' · '+t.timeframe;
+    var tag=t.risk_verdict==="autorizado"?'local-ok':(t.risk_verdict==="negado"?'local-flag-inline':'');
+    var tagText=t.risk_verdict==="autorizado"?"autorizado":(t.risk_verdict==="negado"?"negado":"não avaliado");
+    var motivos=(t.denial_reasons||[]).join("; ");
+    return '<div class="local-metric"><span><b>'+localText(label)+'</b> <em class="'+tag+'">'+localText(tagText)+'</em><br>'+
+      'decisão: '+localText(t.decision)+' · estado: '+localText(t.status)+(motivos?' · motivos: '+localText(motivos):'')+'<br>'+
+      '<small>'+localText(t.created_at)+'</small></span></div>';
+  }).join("");
+  return head+rows;
+}
 function pintarLab(){
   var results=LOCAL.backtests||[];
   $("labsvg").innerHTML="";
   var nota='<p class="note">Resultados históricos simulados de snapshots locais. Custos e detalhes de cada execução estão no laboratório completo; o período curto não valida desempenho futuro. <a href="/?lab=1" target="_blank" rel="noopener">Abrir laboratório completo</a></p>';
   if(!results.length){
-    $("labtxt").innerHTML='<p class="local-message">Ainda não há backtests registrados no banco local. Não há desempenho ou assertividade a apresentar.</p>'+blocoValidacao()+nota;
+    $("labtxt").innerHTML='<p class="local-message">Ainda não há backtests registrados no banco local. Não há desempenho ou assertividade a apresentar.</p>'+blocoValidacao()+blocoTrilha()+nota;
     return;
   }
   var setup=results.filter(function(r){return r.kind==="historical_simulation";});
@@ -330,7 +356,7 @@ function pintarLab(){
     var counts=r.kind==="historical_simulation"?r.signal_count+' sinais · '+r.trade_count+' operações simuladas':r.trade_count+' operações simuladas';
     return '<div class="local-metric"><span><b>'+localText(label)+'</b><br>'+localText(counts)+' · '+localText(r.created_at)+'<br><small>Fonte: '+localText(r.source)+' · SHA-256 '+localText(r.sha256.slice(0,16))+'…</small></span></div>';
   }).join("");
-  $("labtxt").innerHTML=summary+rows+blocoValidacao()+nota;
+  $("labtxt").innerHTML=summary+rows+blocoValidacao()+blocoTrilha()+nota;
 }
 function pintarEvolucion(){
   var font=window.innerWidth<500?32:17;
@@ -399,7 +425,7 @@ AGENT_ICONS = {
     "Strategy & Backtest": "flask", "Risk Manager": "shield", "Execution Agent": "route",
 }
 PANEL_PAGES = ["Agentes", "Mercado", "Operações", "Informe", "Controle"]
-STAGE_VIEWS = ["Sala", "Laboratório", "Evolução do capital"]
+STAGE_VIEWS = ["Sala", "Laboratório", "Orquestração", "Evolução do capital"]
 AGENT_COLORS = {
     "Research Agent": "#7fb4ff", "Market Analyst": "#5fd3d0",
     "Fundamental Analyst": "#c99bff", "Strategy & Backtest": "#e8c66a",
@@ -892,6 +918,10 @@ def page_rooms(agents, counts):
             f'<div class="tal-stage-caption">Estados do SQLite local. Selecione uma mesa pela lista de agentes; {current_feeds} feed(s) cripto atuais. Ordens reais bloqueadas.</div>',
             unsafe_allow_html=True,
         )
+        if room == "Execução":
+            pending_count = len(store.list_pending_pipeline_runs())
+            if pending_count:
+                st.warning(f"{pending_count} autorização(ões) aguardando quantidade · abra Orquestração")
         team = [a for a in agents if (a["name"] == "Execution Agent") == (room == "Execução")]
         st.markdown(
             f'<div class="tal-glance-head"><strong>Estado das mesas</strong>'
@@ -926,6 +956,9 @@ def page_rooms(agents, counts):
     elif view == "Laboratório":
         st.markdown('<div class="tal-view-title">Laboratório de estratégias</div>', unsafe_allow_html=True)
         page_backtests(counts)
+    elif view == "Orquestração":
+        st.markdown('<div class="tal-view-title">Orquestração de agentes</div>', unsafe_allow_html=True)
+        page_pipeline()
     else:
         st.markdown('<div class="tal-view-title">Evolução do capital</div>', unsafe_allow_html=True)
         page_capital()
@@ -1137,8 +1170,15 @@ def page_market():
 
 
 def page_operations():
-    header("Operações", "Histórico de paper trading conciliado. Eventos de sistema permanecem separados de operações financeiras.", "SEM OPERAÇÕES")
     operations = store.list_paper_operations()
+    open_count = sum(1 for item in operations if item["state"] == "open")
+    if not operations:
+        status_label = "SEM OPERAÇÕES"
+    elif open_count:
+        status_label = f"{open_count} ABERTA(S) · {len(operations)} NO TOTAL"
+    else:
+        status_label = f"{len(operations)} OPERAÇÃO(ÕES)"
+    header("Operações", "Histórico de paper trading conciliado. Eventos de sistema permanecem separados de operações financeiras.", status_label)
     if operations:
         st.dataframe(operations, hide_index=True, width="stretch")
     else:
@@ -1202,9 +1242,14 @@ def page_controls():
 
 
 def page_capital():
-    operations = [item for item in store.list_paper_operations() if item["state"] == "closed" and item["exit_price"] is not None]
+    all_operations = store.list_paper_operations()
+    operations = [item for item in all_operations if item["state"] == "closed" and item["exit_price"] is not None]
     if not operations:
-        st.info("Ainda não há operações simuladas encerradas. Não exibimos saldo ou curva ilustrativa.")
+        open_count = sum(1 for item in all_operations if item["state"] == "open")
+        if open_count:
+            st.info(f"{open_count} posição(ões) aberta(s), sem desfecho registrado; P&L só existe após o fechamento (entrega futura).")
+        else:
+            st.info("Ainda não há operações simuladas encerradas. Não exibimos saldo ou curva ilustrativa.")
         return
     realized = []
     cumulative = 0.0
@@ -1627,6 +1672,191 @@ def page_backtests(counts):
     st.caption("SMA: apenas comprado. Setups: comprado ou vendido conforme regra, uma posição por ativo/setup por vez. Série de capital unitário simulada, sem saldo inicial, alavancagem, benchmark ou anualização. Taxas e slippage são hipóteses informadas; o histórico curto não valida desempenho futuro. Na validação, cada lado do corte paga seu próprio aquecimento de 29 barras e o rótulo da amostra vem do pior dos dois lados.")
 
 
+def _pipeline_approved_strategies():
+    return [row for row in store.list_strategies()
+            if row["status"] == "approved"
+            and json.loads(row["rules_json"]).get("engine") == "setup_pattern_v1"
+            and json.loads(row["rules_json"]).get("approval") == "rules_human_approved"]
+
+
+def _run_pipeline_for_all_approved():
+    """Automatic trigger (DEC item 1/12): evaluate every approved strategy × eligible symbol ×
+    the setup's own timeframes. Idempotent by signal bar — safe to call on every rerun."""
+    approved = _pipeline_approved_strategies()
+    results, warnings = [], []
+    for strategy in approved:
+        rules = json.loads(strategy["rules_json"])
+        for symbol in market_data.SYMBOLS:
+            for timeframe in rules.get("timeframes", []):
+                try:
+                    outcome = pipeline_service.run_pipeline(strategy, symbol, timeframe)
+                except ValueError as exc:
+                    warnings.append(f"{strategy['name']} · {symbol} · {timeframe}: {exc}")
+                    continue
+                results.append({"strategy": strategy["name"], "symbol": symbol,
+                                "timeframe": timeframe, "estado": outcome.get("estado")})
+    return approved, results, warnings
+
+
+_RISK_SOURCE_LABELS = {
+    "metodo": "método", "parametro_de_projeto": "parâmetro de projeto",
+    "invariante_de_codigo": "invariante de código", "sem_fonte": "sem fonte",
+}
+
+
+def _risk_source_label(value):
+    return _RISK_SOURCE_LABELS.get(value, value)
+
+
+def _pipeline_limitations(detail, report):
+    """Always-visible limitations block: fixed per-stage items + this trail's own
+    contrary factors (amostra insuficiente, zero conhecimento aprovado, ...) + the
+    fixed note that the daily budget/exposure count commitments, not real outcomes."""
+    items = []
+    for stage in detail["stages"]:
+        items.extend(json.loads(stage["limitations_json"]))
+    decision_payload = report.get("decision") or {}
+    items.extend(decision_payload.get("fatores_contrarios") or [])
+    items.append("Orçamento diário de perda e exposição reservada contam autorizações comprometidas, "
+                 "não desfechos reais fechados — fechamento e cálculo de P&L são escopo de entrega futura.")
+    seen, deduped = set(), []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            deduped.append(item)
+    return deduped
+
+
+def _render_pending_run(run):
+    report = json.loads(run["report_json"])
+    execution_plan = report.get("execution") or {}
+    decision_payload = report.get("decision") or {}
+    risk_payload = report.get("risk") or {}
+    risco = decision_payload.get("risco") or {}
+    with st.container(border=True):
+        st.markdown(f"**{run['setup_name']} · {run['symbol']} · {run['timeframe']}**")
+        st.caption(f"Barra do sinal: {run['signal_bar_utc']} UTC · lado: "
+                   f"{esc(execution_plan.get('lado', decision_payload.get('direcao', '—')))}")
+        cols = st.columns(4)
+        cols[0].metric("Entrada", execution_plan.get("entrada", "—"))
+        cols[1].metric("Stop", execution_plan.get("stop", "—"))
+        cols[2].metric("Alvo", execution_plan.get("alvo", "—"))
+        cols[3].metric("1R", risco.get("unidade_r", "—"))
+        st.markdown("##### Motivo da autorização")
+        for check in risk_payload.get("checks", []):
+            st.caption(f"{check['motivo']} · {check['estado']} · fonte: "
+                      f"{_risk_source_label(check['fonte'])} — {check['detalhe']}")
+        fatores_contrarios = decision_payload.get("fatores_contrarios") or []
+        if fatores_contrarios:
+            st.markdown("##### Ressalvas obrigatórias")
+            for item in fatores_contrarios:
+                st.warning(item)
+        st.info("O preço de entrada vem de uma barra já fechada, mesmo quando recente.")
+        with st.form(f"abrir-posicao-{run['id']}"):
+            quantity = st.number_input(
+                "Quantidade (unidades do ativo)", min_value=0.0, value=None, step=0.001,
+                format="%.8f", placeholder="Informe a quantidade", key=f"pipeline-quantidade-{run['id']}")
+            open_col, discard_col = st.columns(2)
+            open_submitted = open_col.form_submit_button("Abrir posição simulada", type="primary")
+            discard_submitted = discard_col.form_submit_button("Descartar candidato")
+        if open_submitted:
+            if quantity is None or quantity <= 0:
+                st.error("Informe uma quantidade positiva para abrir a posição.")
+            else:
+                try:
+                    execution_service.confirm_open(run["id"], quantity)
+                    st.rerun()
+                except ValueError as exc:
+                    st.error(str(exc))
+        if discard_submitted:
+            execution_service.discard(run["id"])
+            st.rerun()
+
+
+def _pipeline_verdict_banner(run):
+    denial_reasons = json.loads(run["denial_reasons_json"])
+    status = run["status"]
+    if status == "posicao_aberta":
+        st.success("POSIÇÃO ABERTA")
+    elif status == "aguardando_quantidade":
+        st.success("AUTORIZADO — aguardando quantidade")
+    elif status == "avaliado":
+        st.error("NEGADO — " + ("; ".join(denial_reasons) if denial_reasons else "motivo não registrado"))
+    elif status == "sem_oportunidade":
+        st.info("NO TRADE/SEM OPORTUNIDADE — sem sinal do setup nesta barra")
+    elif status == "entrada_nao_acionada":
+        st.info("NO TRADE/SEM OPORTUNIDADE — sinal gerado, mas a entrada não foi acionada na barra seguinte")
+    elif status == "expirado":
+        st.warning("EXPIRADO — autorização expirou sem quantidade informada (~15 min)")
+    elif status == "descartado_pelo_usuario":
+        st.warning("DESCARTADO — candidato descartado pelo usuário")
+    elif status == "recusado_na_confirmacao":
+        st.warning("RECUSADO NA CONFIRMAÇÃO — exposição ocupada por outra operação desde a autorização")
+    else:
+        st.info(status.upper())
+
+
+def _render_pipeline_history_entry(run):
+    report = json.loads(run["report_json"])
+    detail = store.get_pipeline_run(run["id"])
+    with st.expander(f"{run['setup_name']} · {run['symbol']} · {run['timeframe']} · "
+                     f"{run['status'].upper()} · {run['created_at']}"):
+        _pipeline_verdict_banner(run)
+        st.markdown("##### Estágios")
+        st.dataframe([{"#": stage["stage_index"], "Agente": stage["agent"], "Status": stage["status"],
+                       "Resumo": stage["summary"], "Horário UTC": stage["produced_at"]}
+                      for stage in detail["stages"]], hide_index=True, width="stretch")
+        risk_payload = report.get("risk") or {}
+        checks = risk_payload.get("checks") or []
+        if checks:
+            st.markdown("##### Risco · checagens")
+            st.dataframe([{"Motivo": check["motivo"], "Estado": check["estado"],
+                           "Fonte": _risk_source_label(check["fonte"]), "Detalhe": check["detalhe"]}
+                          for check in checks], hide_index=True, width="stretch")
+        st.markdown("##### Limitações desta trilha")
+        for item in _pipeline_limitations(detail, report):
+            st.caption(f"• {item}")
+        st.markdown("##### Relatório completo (auditoria)")
+        st.json(report)
+
+
+def page_pipeline():
+    store.expire_stale_pipeline_runs(max_age_seconds=900)
+    header("Orquestração", "Pipeline de 7 estágios — Market → Knowledge → Backtest Evidence → "
+           "Fundamental → Decision → Risk → Execution — disparado automaticamente sobre o feed "
+           "ao vivo a cada abertura desta aba (DEC-2026-11-16).", "DISPARO AUTOMÁTICO")
+    approved, results, warnings = _run_pipeline_for_all_approved()
+    if st.button("Avaliar agora", key="pipeline-evaluate-now"):
+        st.rerun()
+    for warning in warnings:
+        st.warning(f"Proveniência: {warning}")
+    if not approved:
+        st.info("Nenhuma versão de setup aprovada. O pipeline só avalia regras aprovadas por revisão humana.")
+    else:
+        feed_missing = sum(1 for item in results if item["estado"] == "sem_feed")
+        insufficient_history = sum(1 for item in results if item["estado"] == "historico_insuficiente")
+        if feed_missing:
+            st.warning(f"{feed_missing} combinação(ões) símbolo/intervalo sem feed de mercado no momento "
+                      "(o coletor Binance pode estar parado).")
+        if insufficient_history:
+            st.info(f"{insufficient_history} combinação(ões) ainda em aquecimento: histórico insuficiente "
+                   "no feed ao vivo para avaliar o sinal.")
+
+    st.markdown("#### Pendências aguardando quantidade")
+    pending = store.list_pending_pipeline_runs()
+    if not pending:
+        st.info("Nenhuma autorização aguardando quantidade no momento.")
+    for run in pending:
+        _render_pending_run(run)
+
+    st.markdown("#### Histórico de trilhas")
+    runs = store.list_pipeline_runs(limit=50)
+    if not runs:
+        st.info("Nenhuma trilha de decisão foi avaliada ainda.")
+    for run in runs:
+        _render_pipeline_history_entry(run)
+
+
 def local_lab_main():
     agents = store.get_agents()
     counts = store.counts()
@@ -1714,6 +1944,16 @@ def render_reference():
             "sign_flips_without_best_trade": bool(concentration.get("holdout", {}).get("sign_flips_without_best")
                                                   or concentration.get("train", {}).get("sign_flips_without_best")),
         })
+    pipeline_snapshot = []
+    for item in store.list_pipeline_runs(limit=50):
+        pipeline_snapshot.append({
+            "id": item["id"], "setup_name": item["setup_name"], "symbol": item["symbol"],
+            "timeframe": item["timeframe"], "decision": item["decision"],
+            "risk_verdict": item["risk_verdict"],
+            "denial_reasons": json.loads(item["denial_reasons_json"]),
+            "status": item["status"], "created_at": item["created_at"],
+        })
+    pipeline_pendencias = len(store.list_pending_pipeline_runs())
     snapshot = {
         "agents": store.get_agents(),
         "counts": store.counts(),
@@ -1726,6 +1966,8 @@ def render_reference():
         "paper_operations": store.list_paper_operations()[:50],
         "backtests": backtest_snapshot,
         "validation_runs": validation_snapshot,
+        "pipeline_runs": pipeline_snapshot,
+        "pipeline_pendencias": pipeline_pendencias,
     }
     payload = json.dumps(snapshot, ensure_ascii=False).replace("</", "<\\/")
     reference_html = reference_html.replace('<html lang="es">', '<html lang="pt-BR">', 1)

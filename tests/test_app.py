@@ -9,6 +9,8 @@ from streamlit.testing.v1 import AppTest
 
 from database import store
 from services import datasets as dataset_service
+from services import execution as execution_service
+from services.pipeline import STAGES
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
 REFERENCE_PATH = APP_PATH.with_name("referencia.html")
@@ -63,6 +65,50 @@ def closed_paper_operation(symbol, side, quantity, entry_price, exit_price, fees
              "2026-11-13T00:00:00Z"),
         )
     return store.list_paper_operations()[0]
+
+
+def pending_pipeline_run(strategy, symbol="BTCUSDT", timeframe="2m"):
+    """Insert a synthetic `aguardando_quantidade` pipeline run + its 7 stages directly via
+    `store`, the same shape `services/pipeline.py` would have persisted, without needing a
+    live market feed."""
+    decision = {
+        "ativo": symbol, "direcao": "compra", "setup": {"id": "SETUP_03", "nome": "BOP"},
+        "risco": {"entrada": 100.5, "stop": 99.5, "alvo": 102.5, "unidade_r": 1.0,
+                  "unidade_r_origem": "parâmetro de projeto: 1R = distância entrada→stop do setup"},
+        "fatores_contrarios": ["amostra de validação insuficiente ou limítrofe para este par/intervalo "
+                               "(adequação: sem registro de validação)."],
+        "decisao": "trade_candidate",
+    }
+    risk = {
+        "engine_version": "risk_manager_v1", "verdict": "autorizado",
+        "checks": [{"motivo": "estrategia_nao_aprovada", "fonte": "metodo", "estado": "ok",
+                   "detalhe": "Estratégia aprovada e regras com aprovação humana."},
+                  {"motivo": "risco_excedido", "fonte": "parametro_de_projeto", "estado": "ok",
+                   "detalhe": "Risco do candidato = 1.0R; limite de projeto = 1.0R."}],
+        "denial_reasons": [], "mode": "paper", "risk_committed_r": 1.0,
+        "parametros_de_risco": {"risco_por_trade_r": 1.0, "perda_diaria_maxima_r": 3.0,
+                                "exposicao_maxima_posicoes": 2},
+    }
+    execution_plan = {
+        "status": "ok", "ativo": symbol, "side": "buy", "lado": "compra",
+        "entrada": 100.5, "stop": 99.5, "alvo": 102.5,
+        "aviso_preco": "o preço de entrada vem de uma barra já fechada, mesmo quando recente.",
+    }
+    report = {"market": {}, "knowledge": {}, "backtest_evidence": {}, "fundamental": {},
+              "decision": decision, "risk": risk, "execution": execution_plan}
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    run_id = store.save_pipeline_run(
+        "agent_pipeline_v1", strategy["id"], "SETUP_03", "BOP", symbol, timeframe,
+        now_iso, "trade_candidate", risk_verdict="autorizado",
+        risk_date_utc=now.date().isoformat(), risk_decided_at=now_iso,
+        denial_reasons=[], status="aguardando_quantidade", risk_committed_r=1.0,
+        report=report, pending_since=now_iso)
+    for index, (stage_key, agent) in enumerate(STAGES, start=1):
+        store.add_pipeline_stage(run_id, index, stage_key, agent, "ok",
+                                 summary=f"{stage_key} ok", input_json={},
+                                 output_json=report.get(stage_key, {}), limitations_json=[])
+    return run_id
 
 
 class DashboardTests(unittest.TestCase):
@@ -262,7 +308,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Sem feed de mercado", rendered)
         self.assertIn("Execution Agent", [button.label for button in app.button])
         self.assertEqual(app.radio(key="tal-nav").options, ["Agentes", "Mercado", "Operações", "Informe", "Controle"])
-        self.assertEqual(app.radio(key="tal-view").options, ["Sala", "Laboratório", "Evolução do capital"])
+        self.assertEqual(app.radio(key="tal-view").options, ["Sala", "Laboratório", "Orquestração", "Evolução do capital"])
         self.assertNotIn("Registrar rodada de demonstração", [button.label for button in app.button])
 
     def test_selecting_a_desk_shows_persisted_database_details(self):
@@ -276,14 +322,14 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(len(app.tabs), 5)
         self.assertEqual(store.counts()["agent_runs"], 0)
 
-    def test_five_panels_and_three_workspace_views_render_without_errors(self):
+    def test_five_panels_and_four_workspace_views_render_without_errors(self):
         for panel in ["Agentes", "Mercado", "Operações", "Informe", "Controle"]:
             app = app_for_local_lab()
             app.session_state["tal-nav"] = panel
             app.run()
             self.assertFalse(app.exception, f"{panel}: {[item.message for item in app.exception]}")
             self.assertEqual(app.radio(key="tal-nav").value, panel)
-        for view in ["Sala", "Laboratório", "Evolução do capital"]:
+        for view in ["Sala", "Laboratório", "Orquestração", "Evolução do capital"]:
             app = app_for_local_lab()
             app.session_state["tal-view"] = view
             app.run()
@@ -434,6 +480,101 @@ class DashboardTests(unittest.TestCase):
         self.assertFalse(app.exception, [item.message for item in app.exception])
         self.assertTrue(any("Regras aprovadas para simulação histórica" in item.value for item in app.info))
         self.assertFalse(any("run-backtest" in str(button.key) for button in app.button))
+
+    def test_orchestration_view_renders_without_exception(self):
+        app = app_for_local_lab()
+        app.session_state["tal-view"] = "Orquestração"
+        app.run()
+
+        self.assertFalse(app.exception, [item.message for item in app.exception])
+        self.assertIn("Orquestração de agentes", "\n".join(str(item.value) for item in app.markdown))
+
+    def test_pending_pipeline_run_shows_plan_and_empty_quantity_input(self):
+        strategy = approved_setup_strategy()
+        run_id = pending_pipeline_run(strategy)
+        app = app_for_local_lab()
+        app.session_state["tal-view"] = "Orquestração"
+        app.run()
+
+        self.assertFalse(app.exception, [item.message for item in app.exception])
+        rendered = "\n".join(str(item.value) for item in app.markdown)
+        self.assertIn("BOP", rendered)
+        self.assertIn("BTCUSDT", rendered)
+        metric_values = {item.label: item.value for item in app.metric}
+        self.assertEqual(metric_values["Entrada"], "100.5")
+        self.assertEqual(metric_values["Stop"], "99.5")
+        self.assertEqual(metric_values["Alvo"], "102.5")
+        qty_input = next(item for item in app.number_input if item.key == f"pipeline-quantidade-{run_id}")
+        self.assertIsNone(qty_input.value)
+
+    def test_submitting_empty_quantity_shows_error_and_creates_no_operation(self):
+        strategy = approved_setup_strategy()
+        pending_pipeline_run(strategy)
+        app = app_for_local_lab()
+        app.session_state["tal-view"] = "Orquestração"
+        app.run()
+        next(button for button in app.button if button.label == "Abrir posição simulada").click().run()
+
+        self.assertFalse(app.exception, [item.message for item in app.exception])
+        self.assertTrue(any("Informe uma quantidade positiva" in str(item.value) for item in app.error))
+        self.assertEqual(store.list_paper_operations(), [])
+
+    def test_submitting_valid_quantity_opens_paper_operation_and_rerun_does_not_break(self):
+        strategy = approved_setup_strategy()
+        run_id = pending_pipeline_run(strategy)
+        app = app_for_local_lab()
+        app.session_state["tal-view"] = "Orquestração"
+        app.run()
+        next(item for item in app.number_input
+            if item.key == f"pipeline-quantidade-{run_id}").set_value(0.5)
+        next(button for button in app.button if button.label == "Abrir posição simulada").click().run()
+
+        self.assertFalse(app.exception, [item.message for item in app.exception])
+        operations = store.list_paper_operations()
+        self.assertEqual(len(operations), 1)
+        self.assertEqual(operations[0]["state"], "open")
+        self.assertEqual(operations[0]["pipeline_run_id"], run_id)
+        self.assertEqual(store.get_pipeline_run(run_id)["status"], "posicao_aberta")
+
+        app.run()
+        self.assertFalse(app.exception, [item.message for item in app.exception])
+
+    def test_discarding_pending_candidate_updates_status_without_opening_position(self):
+        strategy = approved_setup_strategy()
+        run_id = pending_pipeline_run(strategy)
+        app = app_for_local_lab()
+        app.session_state["tal-view"] = "Orquestração"
+        app.run()
+        next(button for button in app.button if button.label == "Descartar candidato").click().run()
+
+        self.assertFalse(app.exception, [item.message for item in app.exception])
+        self.assertEqual(store.get_pipeline_run(run_id)["status"], "descartado_pelo_usuario")
+        self.assertEqual(store.list_paper_operations(), [])
+
+    def test_page_operations_header_reflects_real_count_after_opening_position(self):
+        strategy = approved_setup_strategy()
+        run_id = pending_pipeline_run(strategy)
+        execution_service.confirm_open(run_id, 0.75)
+        app = app_for_local_lab()
+        app.session_state["tal-nav"] = "Operações"
+        app.run()
+
+        self.assertFalse(app.exception, [item.message for item in app.exception])
+        rendered = "\n".join(str(item.value) for item in app.markdown)
+        self.assertNotIn("SEM OPERAÇÕES", rendered)
+        self.assertIn("1 ABERTA", rendered)
+
+    def test_default_portal_snapshot_includes_pipeline_runs_and_pendencias(self):
+        strategy = approved_setup_strategy()
+        pending_pipeline_run(strategy)
+        app = AppTest.from_file(str(APP_PATH)).run()
+
+        self.assertFalse(app.exception, [item.message for item in app.exception])
+        rendered = app.get("iframe")[0].proto.srcdoc
+        self.assertIn('"pipeline_runs"', rendered)
+        self.assertIn('"pipeline_pendencias": 1', rendered)
+        self.assertIn('"setup_name": "BOP"', rendered)
+        self.assertIn("function blocoTrilha()", rendered)
 
 
 if __name__ == "__main__":

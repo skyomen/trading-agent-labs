@@ -1,5 +1,6 @@
 import sqlite3
 import json
+import math
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -219,6 +220,46 @@ def initialize():
             )
         """)
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS pipeline_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pipeline_version TEXT NOT NULL,
+                strategy_id INTEGER REFERENCES strategies(id),
+                setup_id TEXT NOT NULL, setup_name TEXT NOT NULL,
+                symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
+                signal_bar_utc TEXT NOT NULL,
+                risk_date_utc TEXT,
+                decision TEXT NOT NULL CHECK(decision IN ('trade_candidate','no_trade')),
+                risk_verdict TEXT NOT NULL CHECK(risk_verdict IN ('autorizado','negado','nao_avaliado')),
+                risk_decided_at TEXT,
+                denial_reasons_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'avaliado' CHECK(status IN (
+                    'sem_oportunidade','entrada_nao_acionada','avaliado',
+                    'aguardando_quantidade','posicao_aberta','descartado_pelo_usuario',
+                    'expirado','recusado_na_confirmacao')),
+                risk_committed_r REAL NOT NULL DEFAULT 0,
+                realized_r REAL,
+                report_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(strategy_id, symbol, timeframe, signal_bar_utc)
+            )
+        """)
+        pipeline_run_columns = {row[1] for row in conn.execute("PRAGMA table_info(pipeline_runs)")}
+        if "pending_since" not in pipeline_run_columns:
+            conn.execute("ALTER TABLE pipeline_runs ADD COLUMN pending_since TEXT")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS pipeline_stages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL REFERENCES pipeline_runs(id) ON DELETE CASCADE,
+                stage_index INTEGER NOT NULL, stage TEXT NOT NULL, agent TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('ok','sem_fonte','nao_aplicavel','bloqueado','nao_executado')),
+                summary TEXT NOT NULL DEFAULT '',
+                input_json TEXT NOT NULL DEFAULT '{}', output_json TEXT NOT NULL DEFAULT '{}',
+                limitations_json TEXT NOT NULL DEFAULT '[]',
+                produced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(run_id, stage_index)
+            )
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS paper_operations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL,
@@ -233,6 +274,11 @@ def initialize():
                 closed_at TEXT
             )
         """)
+        operation_columns = {row[1] for row in conn.execute("PRAGMA table_info(paper_operations)")}
+        if "pipeline_run_id" not in operation_columns:
+            conn.execute("ALTER TABLE paper_operations ADD COLUMN pipeline_run_id INTEGER REFERENCES pipeline_runs(id)")
+        conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS paper_operations_pipeline_run
+                        ON paper_operations(pipeline_run_id) WHERE pipeline_run_id IS NOT NULL""")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS connections (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -302,7 +348,7 @@ def list_events(limit=100):
 def counts():
     tables = ("agents", "events", "documents", "agent_runs", "agent_memories",
               "agent_reviews", "strategies", "backtests", "historical_datasets",
-              "paper_operations", "knowledge_items", "validation_runs")
+              "paper_operations", "knowledge_items", "validation_runs", "pipeline_runs")
     with connect() as conn:
         return {table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                 for table in tables}
@@ -700,8 +746,185 @@ def list_validation_runs(limit=50):
         ).fetchall()]
 
 
-def list_paper_operations():
+def list_paper_operations(state=None):
+    query = "SELECT * FROM paper_operations"
+    params = []
+    if state is not None:
+        query += " WHERE state=?"
+        params.append(state)
+    query += " ORDER BY id DESC"
+    with connect() as conn:
+        return [dict(row) for row in conn.execute(query, params).fetchall()]
+
+
+def open_paper_operation(symbol, side, quantity, entry_price, source, pipeline_run_id=None, fees=0.0):
+    """Insert a real (simulated) open position; never fills exit_price/closed_at.
+
+    Validates in Python, with pt-BR messages, before the INSERT — the table's
+    own CHECK constraints are a backstop, not the primary error path.
+    """
+    if side not in ("buy", "sell"):
+        raise ValueError("Lado da operação deve ser 'buy' ou 'sell'.")
+    if not math.isfinite(float(quantity)) or float(quantity) <= 0:
+        raise ValueError("Quantidade deve ser um número positivo.")
+    if not math.isfinite(float(entry_price)) or float(entry_price) <= 0:
+        raise ValueError("Preço de entrada deve ser um número positivo.")
+    if not math.isfinite(float(fees)) or float(fees) < 0:
+        raise ValueError("Taxas devem ser um número finito e não negativo.")
+    with connect() as conn:
+        cur = conn.execute("""
+            INSERT INTO paper_operations(symbol,side,quantity,entry_price,fees,source,
+                state,pipeline_run_id)
+            VALUES(?,?,?,?,?,?,'open',?)
+        """, (symbol, side, float(quantity), float(entry_price), float(fees), source,
+              pipeline_run_id))
+        return cur.lastrowid
+
+
+def save_pipeline_run(pipeline_version, strategy_id, setup_id, setup_name, symbol, timeframe,
+                      signal_bar_utc, decision, risk_verdict="nao_avaliado", risk_date_utc=None,
+                      risk_decided_at=None, denial_reasons=None, status="avaliado",
+                      risk_committed_r=0.0, realized_r=None, report=None, pending_since=None):
+    """Insert one pipeline run; same (strategy,symbol,timeframe,signal_bar) never duplicates.
+
+    Idempotent by bar: on conflict with the UNIQUE key, returns the id of the
+    row already recorded instead of inserting a second trail for the same bar.
+    """
+    denial_reasons_json = json.dumps(denial_reasons or [], ensure_ascii=False, sort_keys=True)
+    report_json = json.dumps(report or {}, ensure_ascii=False, sort_keys=True)
+    with connect() as conn:
+        conn.execute("""
+            INSERT INTO pipeline_runs(pipeline_version,strategy_id,setup_id,setup_name,symbol,
+                timeframe,signal_bar_utc,risk_date_utc,decision,risk_verdict,risk_decided_at,
+                denial_reasons_json,status,risk_committed_r,realized_r,report_json,pending_since)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(strategy_id,symbol,timeframe,signal_bar_utc) DO NOTHING
+        """, (pipeline_version, strategy_id, setup_id, setup_name, symbol, timeframe,
+              signal_bar_utc, risk_date_utc, decision, risk_verdict, risk_decided_at,
+              denial_reasons_json, status, risk_committed_r, realized_r, report_json,
+              pending_since))
+        row = conn.execute("""
+            SELECT id FROM pipeline_runs
+            WHERE strategy_id IS ? AND symbol=? AND timeframe=? AND signal_bar_utc=?
+        """, (strategy_id, symbol, timeframe, signal_bar_utc)).fetchone()
+        return row["id"]
+
+
+def update_pipeline_run_status(run_id, status, **fields):
+    """Update `status` plus any related columns (risk_verdict, denial_reasons_json, ...).
+
+    `denial_reasons` and `report` are accepted as Python values and serialized
+    to their `_json` columns; every other keyword must name an existing column.
+    """
+    allowed = {"risk_verdict", "risk_decided_at", "risk_date_utc", "denial_reasons_json",
+               "risk_committed_r", "realized_r", "report_json", "pending_since"}
+    assignments = {"status": status}
+    for key, value in fields.items():
+        if key == "denial_reasons":
+            assignments["denial_reasons_json"] = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        elif key == "report":
+            assignments["report_json"] = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        elif key in allowed:
+            assignments[key] = value
+        else:
+            raise ValueError(f"Campo desconhecido para pipeline_runs: {key}")
+    set_clause = ",".join(f"{key}=?" for key in assignments)
+    with connect() as conn:
+        conn.execute(f"UPDATE pipeline_runs SET {set_clause} WHERE id=?",
+                     (*assignments.values(), run_id))
+
+
+def add_pipeline_stage(run_id, stage_index, stage, agent, status, summary="",
+                       input_json=None, output_json=None, limitations_json=None):
+    with connect() as conn:
+        cur = conn.execute("""
+            INSERT INTO pipeline_stages(run_id,stage_index,stage,agent,status,summary,
+                input_json,output_json,limitations_json)
+            VALUES(?,?,?,?,?,?,?,?,?)
+        """, (run_id, stage_index, stage, agent, status, summary,
+              json.dumps(input_json or {}, ensure_ascii=False, sort_keys=True),
+              json.dumps(output_json or {}, ensure_ascii=False, sort_keys=True),
+              json.dumps(limitations_json or [], ensure_ascii=False, sort_keys=True)))
+        return cur.lastrowid
+
+
+def list_pipeline_runs(limit=50):
     with connect() as conn:
         return [dict(row) for row in conn.execute(
-            "SELECT * FROM paper_operations ORDER BY id DESC"
+            "SELECT * FROM pipeline_runs ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()]
+
+
+def get_pipeline_run(run_id):
+    with connect() as conn:
+        run = conn.execute("SELECT * FROM pipeline_runs WHERE id=?", (run_id,)).fetchone()
+        if not run:
+            return None
+        stages = conn.execute(
+            "SELECT * FROM pipeline_stages WHERE run_id=? ORDER BY stage_index", (run_id,)
+        ).fetchall()
+        return {**dict(run), "stages": [dict(stage) for stage in stages]}
+
+
+def list_pending_pipeline_runs():
+    with connect() as conn:
+        return [dict(row) for row in conn.execute(
+            "SELECT * FROM pipeline_runs WHERE status='aguardando_quantidade' ORDER BY id ASC"
+        ).fetchall()]
+
+
+def expire_stale_pipeline_runs(max_age_seconds=900):
+    """Mark every `aguardando_quantidade` run older than `max_age_seconds` as `expirado`.
+
+    Compares against `pending_since` (set when the run entered
+    `aguardando_quantidade`), not `created_at` — the clock the DEC describes is
+    "~15 minutes since the entry price went stale", which starts when Execution
+    parks the run awaiting quantity, not when the run was first recorded.
+    """
+    with connect() as conn:
+        rows = conn.execute("""
+            SELECT id FROM pipeline_runs
+            WHERE status='aguardando_quantidade' AND pending_since IS NOT NULL
+              AND (julianday('now') - julianday(pending_since)) * 86400 > ?
+        """, (max_age_seconds,)).fetchall()
+        ids = [row["id"] for row in rows]
+        conn.executemany("UPDATE pipeline_runs SET status='expirado' WHERE id=?",
+                         [(run_id,) for run_id in ids])
+        return ids
+
+
+def count_committed_risk_r(date_utc):
+    """Sum `risk_committed_r` for every authorized run decided on `date_utc` (UTC).
+
+    Per the DEC (item 5 + item 9 + "Motivo"/"Consequências"): a pending
+    authorization already spends the daily budget, and spending is never
+    returned — `aguardando_quantidade`, `expirado` and `descartado_pelo_usuario`
+    all still count, exactly like `posicao_aberta`. Only the authorization
+    itself (`risk_verdict='autorizado'`) and its decision date matter here.
+    """
+    with connect() as conn:
+        row = conn.execute("""
+            SELECT COALESCE(SUM(risk_committed_r), 0) AS total FROM pipeline_runs
+            WHERE risk_verdict='autorizado' AND date(risk_decided_at)=date(?)
+        """, (date_utc,)).fetchone()
+        return row["total"]
+
+
+def count_reserved_exposure():
+    """Count open paper positions tied to a pipeline run, plus unexpired pending runs.
+
+    Per the DEC item 9, a pending authorization reserves one of the 2 exposure
+    slots (otherwise the limit would be trivially bypassed by stacking pending
+    runs); once a run is `expirado` or `descartado_pelo_usuario` it no longer
+    reserves a slot — only `aguardando_quantidade` (not yet expired) and an
+    actually open `paper_operations` row count.
+    """
+    with connect() as conn:
+        open_positions = conn.execute("""
+            SELECT COUNT(*) FROM paper_operations
+            WHERE state='open' AND pipeline_run_id IS NOT NULL
+        """).fetchone()[0]
+        pending = conn.execute("""
+            SELECT COUNT(*) FROM pipeline_runs WHERE status='aguardando_quantidade'
+        """).fetchone()[0]
+        return open_positions + pending
