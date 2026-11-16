@@ -22,6 +22,7 @@ from services import datasets as dataset_service
 from services import execution as execution_service
 from services import market_data
 from services import pipeline as pipeline_service
+from services import trade_management as trade_management_service
 from services.agents import provider_summary, run_agent_task
 from services.backtest import parse_ohlcv_csv, run_sma_crossover
 from services.setup_backtest import run_approved as run_approved_setup
@@ -1183,6 +1184,9 @@ def page_operations():
         st.dataframe(operations, hide_index=True, width="stretch")
     else:
         st.info("Nenhuma operação simulada conciliada foi registrada. Eventos locais não são trades.")
+    st.caption("Condução recalculada a cada abertura desta tela a partir de market_bars (custo: 10 bps "
+               "taxa + 5 bps slippage, mesma premissa do backtest); uma posição só fecha quando alguém "
+               "abre a tela. Resultado oficial em R, não em dinheiro.")
     st.markdown("#### Eventos e trilha de atividade")
     show_events(store.list_events(limit=100))
 
@@ -1247,7 +1251,7 @@ def page_capital():
     if not operations:
         open_count = sum(1 for item in all_operations if item["state"] == "open")
         if open_count:
-            st.info(f"{open_count} posição(ões) aberta(s), sem desfecho registrado; P&L só existe após o fechamento (entrega futura).")
+            st.info(f"{open_count} posição(ões) aberta(s), sem desfecho registrado; P&L só existe após o fechamento.")
         else:
             st.info("Ainda não há operações simuladas encerradas. Não exibimos saldo ou curva ilustrativa.")
         return
@@ -1261,6 +1265,9 @@ def page_capital():
     st.metric("P&L realizado acumulado", f"{cumulative:,.2f}", help="Não inclui saldo inicial, posições abertas ou custos não registrados.")
     st.line_chart([{ "operação": row["Operação"], "P&L realizado": row["Acumulado realizado"]} for row in realized], x="operação", y="P&L realizado")
     st.caption("Fonte: operações simuladas fechadas no SQLite. Não equivale ao saldo da conta.")
+    st.caption("Este P&L em dinheiro usa a quantidade que você mesmo informou ao abrir cada posição, sem "
+               "saldo inicial presumido; o resultado oficial da condução fica em R "
+               "(pipeline_runs.realized_r), não neste valor monetário.")
 
 
 def page_connections():
@@ -1698,6 +1705,20 @@ def _run_pipeline_for_all_approved():
     return approved, results, warnings
 
 
+def _replay_open_positions():
+    """Automatic trigger (DEC-2026-11-16 Entrega 8, item 1): reconducts every currently-open
+    paper operation on every rerun of a screen that shows positions — same on-demand,
+    recompute-from-scratch pattern `_run_pipeline_for_all_approved` already uses for new
+    candidates. `replay_operation` never raises for a data condition (its own state table —
+    nao_aplicavel/sem_trilha/sem_feed/sem_barra_de_entrada/sem_barra_nova/em_curso/fechada/
+    ja_fechada — covers those); this guard only catches an unexpected programming error."""
+    try:
+        return trade_management_service.replay_open_operations()
+    except Exception as exc:
+        st.warning(f"Falha inesperada ao reconduzir posições abertas: {exc}")
+        return []
+
+
 _RISK_SOURCE_LABELS = {
     "metodo": "método", "parametro_de_projeto": "parâmetro de projeto",
     "invariante_de_codigo": "invariante de código", "sem_fonte": "sem fonte",
@@ -1718,7 +1739,9 @@ def _pipeline_limitations(detail, report):
     decision_payload = report.get("decision") or {}
     items.extend(decision_payload.get("fatores_contrarios") or [])
     items.append("Orçamento diário de perda e exposição reservada contam autorizações comprometidas, "
-                 "não desfechos reais fechados — fechamento e cálculo de P&L são escopo de entrega futura.")
+                 "não desfechos reais fechados — condução sob demanda disponível (fechamento por "
+                 "stop/alvo/trailing recalculado a cada abertura da tela de Orquestração), sem "
+                 "processo em background, dependente do coletor Binance estar ativo.")
     seen, deduped = set(), []
     for item in items:
         if item not in seen:
@@ -1773,11 +1796,32 @@ def _render_pending_run(run):
             st.rerun()
 
 
+def _closed_position_banner(exit_reason, realized_r):
+    """Shared by `_pipeline_verdict_banner` and `_render_open_positions`: the same
+    motivo+resultado message, banner color keyed off the sign of `realized_r`."""
+    text = f"POSIÇÃO FECHADA — {exit_reason}"
+    if realized_r is not None:
+        text += f" · resultado {realized_r:+.2f}R"
+    if realized_r is None or realized_r == 0:
+        st.info(text)
+    elif realized_r > 0:
+        st.success(text)
+    else:
+        st.error(text)
+
+
 def _pipeline_verdict_banner(run):
     denial_reasons = json.loads(run["denial_reasons_json"])
     status = run["status"]
     if status == "posicao_aberta":
-        st.success("POSIÇÃO ABERTA")
+        realized_r = run["realized_r"]
+        if realized_r is None:
+            st.success("POSIÇÃO ABERTA")
+        else:
+            operation = next((op for op in store.list_paper_operations()
+                              if op["pipeline_run_id"] == run["id"]), None)
+            exit_reason = operation["exit_reason"] if operation else "desconhecido"
+            _closed_position_banner(exit_reason, realized_r)
     elif status == "aguardando_quantidade":
         st.success("AUTORIZADO — aguardando quantidade")
     elif status == "avaliado":
@@ -1820,7 +1864,49 @@ def _render_pipeline_history_entry(run):
         st.json(report)
 
 
+def _render_open_positions(replay_results):
+    """Renders the result of the `_replay_open_positions()` call made at the top of
+    `page_pipeline()` — one card per paper_operation that was `open` at the start of this
+    rerun, showing the frozen plan plus whatever the replay just found (DEC-2026-11-16
+    Entrega 8). Never re-queries the operation's current state on its own: the state shown is
+    exactly the one this rerun's replay produced, so a just-closed position is never shown as
+    still open."""
+    if not replay_results:
+        st.info("Nenhuma posição simulada aberta.")
+        return
+    operations_by_id = {operation["id"]: operation for operation in store.list_paper_operations()}
+    for result in replay_results:
+        operation = operations_by_id.get(result["operation_id"])
+        if operation is None:
+            continue
+        run = store.get_pipeline_run(operation["pipeline_run_id"]) if operation["pipeline_run_id"] else None
+        plan = (json.loads(run["report_json"]).get("execution") or {}) if run else {}
+        label = (f"{run['setup_name']} · " if run else "") + \
+                f"{operation['symbol']} · {run['timeframe'] if run else '—'}"
+        estado = result["estado"]
+        with st.container(border=True):
+            st.markdown(f"**{label}** · operação #{operation['id']}")
+            cols = st.columns(4)
+            cols[0].metric("Entrada", operation["entry_price"])
+            if estado == "em_curso":
+                trailing = result.get("trailing_updates", 0) > 0
+                cols[1].metric("Stop arrastado" if trailing else "Stop", result.get("stop_corrente", "—"))
+                cols[2].metric("Alvo", plan.get("alvo", "—"))
+                cols[3].metric("Barras avaliadas", result.get("barras_avaliadas", "—"))
+            elif estado == "fechada":
+                trade = result.get("trade") or {}
+                trailing = trade.get("trailing_updates", 0) > 0
+                cols[1].metric("Stop final arrastado" if trailing else "Stop final", trade.get("final_stop", "—"))
+                cols[2].metric("Alvo", plan.get("alvo", "—"))
+                _closed_position_banner(result["exit_reason"], result.get("realized_r"))
+            else:
+                cols[1].metric("Stop", plan.get("stop", "—"))
+                cols[2].metric("Alvo", plan.get("alvo", "—"))
+                st.caption(f"Condução sem avaliação nova nesta rodada: {estado}.")
+
+
 def page_pipeline():
+    replay_results = _replay_open_positions()
     store.expire_stale_pipeline_runs(max_age_seconds=900)
     header("Orquestração", "Pipeline de 7 estágios — Market → Knowledge → Backtest Evidence → "
            "Fundamental → Decision → Risk → Execution — disparado automaticamente sobre o feed "
@@ -1848,6 +1934,9 @@ def page_pipeline():
         st.info("Nenhuma autorização aguardando quantidade no momento.")
     for run in pending:
         _render_pending_run(run)
+
+    st.markdown("#### Condução das posições abertas")
+    _render_open_positions(replay_results)
 
     st.markdown("#### Histórico de trilhas")
     runs = store.list_pipeline_runs(limit=50)
@@ -1904,6 +1993,7 @@ def local_lab_main():
 
 
 def render_reference():
+    _replay_open_positions()
     source = Path(__file__).with_name("referencia.html")
     reference_html = source.read_text(encoding="utf-8")
     overview = market_overview()
@@ -1944,14 +2034,19 @@ def render_reference():
             "sign_flips_without_best_trade": bool(concentration.get("holdout", {}).get("sign_flips_without_best")
                                                   or concentration.get("train", {}).get("sign_flips_without_best")),
         })
+    operations_by_run_id = {op["pipeline_run_id"]: op for op in store.list_paper_operations()
+                            if op["pipeline_run_id"] is not None}
     pipeline_snapshot = []
     for item in store.list_pipeline_runs(limit=50):
+        operation = operations_by_run_id.get(item["id"])
         pipeline_snapshot.append({
             "id": item["id"], "setup_name": item["setup_name"], "symbol": item["symbol"],
             "timeframe": item["timeframe"], "decision": item["decision"],
             "risk_verdict": item["risk_verdict"],
             "denial_reasons": json.loads(item["denial_reasons_json"]),
             "status": item["status"], "created_at": item["created_at"],
+            "realized_r": item["realized_r"],
+            "exit_reason": operation["exit_reason"] if operation else None,
         })
     pipeline_pendencias = len(store.list_pending_pipeline_runs())
     snapshot = {

@@ -44,6 +44,105 @@ def aggregate_minutes(bars, minutes):
                     "gaps_between_complete_blocks": gaps}
 
 
+def _segment_gap(bars, index, minutes):
+    """True when bars[index] does not continue bars[index - 1] (same arithmetic the main
+    loop already uses to detect the start of a new segment)."""
+    return index > 0 and (datetime.fromisoformat(bars[index]["timestamp"]) -
+                          datetime.fromisoformat(bars[index - 1]["timestamp"])).total_seconds() != minutes * 60
+
+
+def advance_position(position, bars, index, rules, direction, minutes):
+    """One bar of managing an already-open position. Mutates `position` in place
+    (favorable_closes, stop, trailing_updates) and returns None (position stays open) or a
+    dict {"index": i, "price": ..., "reason": ..., "conflict": bool} when the bar closes it.
+
+    Checked in this exact order (copied from the former inline loop, do not reorder):
+    1. A segment gap closes the position at the PREVIOUS bar's close, before this bar's
+       stop/target are even considered (replicates the former behaviour where a gap bar
+       never runs the normal management step).
+    2. Stop/target on the current bar, stop-first on an intrabar conflict.
+    3. Otherwise: favorable_closes compares this bar's close against the entry price (not the
+       previous close), and the VBS/VSS trailing hardcode (intentional, DEC item 2 of
+       Entrega 8 — do not generalize to rules["management"]).
+    """
+    if _segment_gap(bars, index, minutes):
+        return {"index": index - 1, "price": bars[index - 1]["close"],
+                "reason": "gap_boundary", "conflict": False}
+    bar = bars[index]
+    stop_hit = bar["low"] <= position["stop"] if direction == 1 else bar["high"] >= position["stop"]
+    target_hit = bar["high"] >= position["target"] if direction == 1 else bar["low"] <= position["target"]
+    if stop_hit or target_hit:
+        return {"index": index, "price": position["stop"] if stop_hit else position["target"],
+                "reason": "stop" if stop_hit else "target", "conflict": stop_hit and target_hit}
+    if direction * (bar["close"] - position["entry_price"]) > 0:
+        position["favorable_closes"] += 1
+    if position["favorable_closes"] >= 2 and rules["setup_name"] in {"VBS", "VSS"} and index > 0:
+        candidate = bars[index - 1]["low"] if direction == 1 else bars[index - 1]["high"]
+        if direction * (candidate - position["stop"]) > 0:
+            position["stop"] = candidate
+            position["trailing_updates"] += 1
+    return None
+
+
+def closed_trade(position, side, exit_index, exit_price, reason, conflict, direction,
+                 fee_bps, slippage_bps):
+    """Build the trade dict with adverse slippage and round-trip fee (same arithmetic
+    close_position used to do inline). `exit_index` travels back as "exit_index" because this
+    function never sees `bars`; the caller (which does) replaces it with the real "exit_time"
+    before persisting or returning the trade."""
+    adverse = exit_price * (1 - direction * slippage_bps / 10000)
+    gross = direction * (adverse - position["entry_price"]) / position["entry_price"]
+    fee = 2 * fee_bps / 10000
+    net = gross - fee
+    return {"side": side, "signal_time": position["signal_time"],
+            "entry_time": position["entry_time"], "exit_index": exit_index,
+            "entry_price": position["entry_price"], "exit_price": adverse,
+            "initial_stop": position["initial_stop"], "final_stop": position["stop"],
+            "target": position["target"], "exit_reason": reason,
+            "intrabar_conflict": conflict, "trailing_updates": position["trailing_updates"],
+            "gross_return_pct": gross * 100, "net_return_pct": net * 100}
+
+
+def replay_open_position(bars, position, rules, direction, minutes, fee_bps, slippage_bps,
+                         start_index=0, check_entry_bar=True, close_on_end_of_data=False):
+    """Manage an already-open position over `bars`, where bars[start_index] is the ENTRY bar
+    (the position already exists at that index, exactly as simulate() creates it at the end of
+    the entry bar's iteration).
+
+    1. If check_entry_bar: applies the same ambiguity rule simulate() applies on the entry bar
+       itself today — closes immediately as "entry_bar_ambiguous_stop" (conflict=True) when the
+       stop OR the target was already touched on the entry bar.
+    2. Otherwise, walks index = start_index + 1 .. len(bars) - 1, calling advance_position on
+       each bar; a closing result from advance_position ends the replay.
+    3. If the loop ends without closing: close_on_end_of_data=True closes at bars[-1]["close"]
+       with reason "end_of_data" (the same rule simulate() uses when bars run out);
+       close_on_end_of_data=False (the mode used live, DEC item 5) returns the still-open
+       position instead.
+    """
+    def _closed(exit_index, exit_price, reason, conflict):
+        trade = closed_trade(position, rules["side"], exit_index, exit_price, reason, conflict,
+                             direction, fee_bps, slippage_bps)
+        trade["exit_time"] = bars[trade.pop("exit_index")]["timestamp"]
+        return {"estado": "fechada", "trade": trade}
+
+    if check_entry_bar:
+        entry_bar = bars[start_index]
+        stop_hit = entry_bar["low"] <= position["stop"] if direction == 1 else entry_bar["high"] >= position["stop"]
+        target_hit = entry_bar["high"] >= position["target"] if direction == 1 else entry_bar["low"] <= position["target"]
+        if stop_hit or target_hit:
+            return _closed(start_index, position["stop"], "entry_bar_ambiguous_stop", True)
+
+    for index in range(start_index + 1, len(bars)):
+        closing = advance_position(position, bars, index, rules, direction, minutes)
+        if closing:
+            return _closed(closing["index"], closing["price"], closing["reason"], closing["conflict"])
+
+    if close_on_end_of_data:
+        return _closed(len(bars) - 1, bars[-1]["close"], "end_of_data", False)
+    return {"estado": "aberta", "position": position,
+            "barras_avaliadas": len(bars) - start_index - 1}
+
+
 def simulate(bars, rules, tick_size, fee_bps, slippage_bps):
     """Signal at a close, fill only the next bar, and resolve ambiguous paths against the trade."""
     if any(not math.isfinite(float(value)) or float(value) < 0 for value in (fee_bps, slippage_bps)):
@@ -60,45 +159,27 @@ def simulate(bars, rules, tick_size, fee_bps, slippage_bps):
 
     def close_position(index, price, reason, conflict=False):
         nonlocal position, equity, peak, drawdown, conflicts
-        adverse = price * (1 - direction * slippage_bps / 10000)
-        gross = direction * (adverse - position["entry_price"]) / position["entry_price"]
-        fee = 2 * fee_bps / 10000
-        net = gross - fee
-        equity *= 1 + net
+        trade = closed_trade(position, rules["side"], index, price, reason, conflict,
+                             direction, fee_bps, slippage_bps)
+        trade["exit_time"] = bars[trade.pop("exit_index")]["timestamp"]
+        equity *= 1 + trade["net_return_pct"] / 100
         peak = max(peak, equity)
         drawdown = max(drawdown, (peak - equity) / peak)
         conflicts += int(conflict)
-        trades.append({"side": rules["side"], "signal_time": position["signal_time"],
-                       "entry_time": position["entry_time"], "exit_time": bars[index]["timestamp"],
-                       "entry_price": position["entry_price"], "exit_price": adverse,
-                       "initial_stop": position["initial_stop"], "final_stop": position["stop"],
-                       "target": position["target"], "exit_reason": reason,
-                       "intrabar_conflict": conflict, "trailing_updates": position["trailing_updates"],
-                       "gross_return_pct": gross * 100, "net_return_pct": net * 100})
+        trades.append(trade)
         position = None
 
     for i, bar in enumerate(bars):
         occupied_at_open = position is not None
-        if i and (datetime.fromisoformat(bar["timestamp"]) -
-                  datetime.fromisoformat(bars[i - 1]["timestamp"])).total_seconds() != minutes * 60:
-            if position:
-                close_position(i - 1, bars[i - 1]["close"], "gap_boundary")
+        if _segment_gap(bars, i, minutes):
             segment_start = i
         if position:
-            stop_hit = bar["low"] <= position["stop"] if direction == 1 else bar["high"] >= position["stop"]
-            target_hit = bar["high"] >= position["target"] if direction == 1 else bar["low"] <= position["target"]
-            if stop_hit or target_hit:
-                close_position(i, position["stop"] if stop_hit else position["target"],
-                               "stop" if stop_hit else "target", stop_hit and target_hit)
+            trailing_before = position["trailing_updates"]
+            closing = advance_position(position, bars, i, rules, direction, minutes)
+            if closing:
+                close_position(closing["index"], closing["price"], closing["reason"], closing["conflict"])
             else:
-                if direction * (bar["close"] - position["entry_price"]) > 0:
-                    position["favorable_closes"] += 1
-                if (position["favorable_closes"] >= 2 and rules["setup_name"] in {"VBS", "VSS"} and i > 0):
-                    candidate = bars[i - 1]["low"] if direction == 1 else bars[i - 1]["high"]
-                    if direction * (candidate - position["stop"]) > 0:
-                        position["stop"] = candidate
-                        position["trailing_updates"] += 1
-                        trailing_updates += 1
+                trailing_updates += position["trailing_updates"] - trailing_before
         if occupied_at_open or position or i - segment_start < WARMUP_BARS or i == len(bars) - 1:
             continue
         # The signal is evaluated on i-1; order lives only on i. No prior signal

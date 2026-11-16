@@ -47,7 +47,10 @@ _STAGE_LIMITATIONS = {
     "decision": [],
     "risk": ["mercado_fora_das_regras permanece não aplicável até filters.session_hours "
             "ganhar fonte própria (DEC item 4)."],
-    "execution": ["fechamento (stop/alvo/P&L) é escopo de entrega futura (DEC item 8)."],
+    "execution": ["condução (fechamento por stop/alvo/trailing) roda sob demanda a cada "
+                 "abertura da tela de Orquestração, nunca em processo contínuo em segundo "
+                 "plano; depende do coletor Binance estar ativo alimentando market_bars "
+                 "(DEC-2026-11-16 Entrega 8, itens 1 e 3)."],
 }
 
 
@@ -180,7 +183,8 @@ def run_pipeline(strategy, symbol, timeframe):
             entrada_acionada = True
             entry_price = (max(trigger_bar["open"], raw_signal["entry"]) if direction == 1
                           else min(trigger_bar["open"], raw_signal["entry"]))
-            candidate_signal = {**raw_signal, "entry_price": entry_price}
+            candidate_signal = {**raw_signal, "entry_price": entry_price,
+                               "entry_bar_utc": trigger_bar["timestamp"]}
 
     feed_row = next((row for row in store.list_market_feeds()
                      if row["provider"] == provider and row["symbol"] == symbol

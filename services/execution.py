@@ -39,11 +39,14 @@ def build_execution_plan(decision, risk_result, candidate_signal, rules):
         "entrada": candidate_signal["entry_price"],
         "stop": candidate_signal["stop"],
         "alvo": candidate_signal["target"],
+        "barra_de_entrada_utc": candidate_signal.get("entry_bar_utc"),
         "invalidacao": ("o gatilho já foi acionado nesta barra; a invalidação por 'barra "
                        "seguinte não aciona o gatilho' não se aplica mais a este candidato"),
         "conducao": rules.get("management"),
-        "saida": ("stop | alvo | fim de dados — este sistema não fecha a posição sozinho "
-                 "nesta entrega"),
+        "saida": ("stop | alvo | fim de dados — condução sob demanda: recalculada do zero a "
+                 "cada abertura da tela de Orquestração, nunca em processo contínuo; a "
+                 "posição só fecha quando alguém abre essa tela, e somente enquanto o coletor "
+                 "Binance estiver alimentando market_bars"),
         "aviso_preco": "o preço de entrada vem de uma barra já fechada, mesmo quando recente.",
         "custo": "custo zero na abertura; custos serão registrados no fechamento",
     }

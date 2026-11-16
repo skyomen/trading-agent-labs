@@ -10,6 +10,7 @@ from streamlit.testing.v1 import AppTest
 from database import store
 from services import datasets as dataset_service
 from services import execution as execution_service
+from services import market_data
 from services.pipeline import STAGES
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
@@ -109,6 +110,37 @@ def pending_pipeline_run(strategy, symbol="BTCUSDT", timeframe="2m"):
                                  summary=f"{stage_key} ok", input_json={},
                                  output_json=report.get(stage_key, {}), limitations_json=[])
     return run_id
+
+
+def seeded_open_position(strategy, signal_bar_utc, entry_price, stop, target, side="buy",
+                         symbol="BTCUSDT", timeframe="2m", entry_bar_utc=None):
+    """Seeds one `posicao_aberta` pipeline run + its open paper_operation directly via
+    `store`, the same shape Entrega 7's `confirm_open` would have left behind, without
+    needing to walk the pending-run/confirm flow (Entrega 8 / Fase 3)."""
+    plan = {"status": "ok", "entrada": entry_price, "side": side, "stop": stop, "alvo": target}
+    if entry_bar_utc:
+        plan["barra_de_entrada_utc"] = entry_bar_utc
+    run_id = store.save_pipeline_run(
+        "agent_pipeline_v1", strategy["id"], "SETUP_03", "BOP", symbol, timeframe,
+        signal_bar_utc, "trade_candidate", risk_verdict="autorizado",
+        status="posicao_aberta", report={"execution": plan})
+    operation_id = store.open_paper_operation(
+        symbol, side, 1.0, entry_price, "pipeline/test", pipeline_run_id=run_id)
+    return run_id, operation_id
+
+
+def raw_bars_from_candles(candles, minutes=2):
+    """Expands 2m-looking `candles` into the raw 1-minute bars that re-aggregate into exactly
+    those candles — same convention as tests/test_trade_management.py::expand_candles_to_raw,
+    duplicated locally to keep this test module independent."""
+    raw = []
+    for candle in candles:
+        start = datetime.fromisoformat(candle["timestamp"])
+        for minute in range(minutes):
+            stamp = (start + timedelta(minutes=minute)).isoformat()
+            raw.append({"timestamp": stamp, "open": candle["open"], "high": candle["high"],
+                       "low": candle["low"], "close": candle["close"], "volume": 1.0})
+    return raw
 
 
 class DashboardTests(unittest.TestCase):
@@ -575,6 +607,84 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('"pipeline_pendencias": 1', rendered)
         self.assertIn('"setup_name": "BOP"', rendered)
         self.assertIn("function blocoTrilha()", rendered)
+
+    def test_orchestration_view_with_open_position_and_no_feed_renders_without_exception(self):
+        """Entrega 8 / Fase 3: a posição aberta sem market_bars nenhuma não pode aparecer
+        como falsamente fechada — o estado tem que ser um dos degradados (sem_feed)."""
+        strategy = approved_setup_strategy()
+        run_id, operation_id = seeded_open_position(
+            strategy, "2026-11-10T00:00:00+00:00", entry_price=100.5, stop=99.0, target=110.0,
+            entry_bar_utc="2026-11-10T00:02:00+00:00")
+        app = app_for_local_lab()
+        app.session_state["tal-view"] = "Orquestração"
+        app.run()
+
+        self.assertFalse(app.exception, [item.message for item in app.exception])
+        rendered = "\n".join(str(item.value) for item in list(app.markdown) + list(app.caption))
+        self.assertIn("Condução das posições abertas", rendered)
+        self.assertIn("sem_feed", rendered)
+        self.assertNotIn("FECHADA", rendered)
+        self.assertIsNone(store.get_pipeline_run(run_id)["realized_r"])
+        self.assertEqual(store.list_paper_operations()[0]["id"], operation_id)
+        self.assertEqual(store.list_paper_operations()[0]["state"], "open")
+
+    def test_orchestration_view_closes_an_open_position_when_the_feed_shows_a_stop_hit(self):
+        """Entrega 8 / Fase 3: com market_bars semeadas batendo o stop, abrir a tela de
+        Orquestração (uma chamada) já fecha a posição — exit_reason/realized_r visíveis."""
+        strategy = approved_setup_strategy()
+        entry_bar_utc = "2026-11-10T00:02:00+00:00"
+        candles = [
+            {"timestamp": entry_bar_utc, "open": 100.0, "high": 101.0, "low": 99.5, "close": 100.5},
+            {"timestamp": "2026-11-10T00:04:00+00:00", "open": 100.5, "high": 100.5,
+             "low": 98.0, "close": 98.5},
+        ]
+        store.upsert_market_bars(market_data.PROVIDER, "BTCUSDT", "1m",
+                                 raw_bars_from_candles(candles))
+        run_id, operation_id = seeded_open_position(
+            strategy, "2026-11-10T00:00:00+00:00", entry_price=100.5, stop=99.0, target=110.0,
+            entry_bar_utc=entry_bar_utc)
+
+        app = app_for_local_lab()
+        app.session_state["tal-view"] = "Orquestração"
+        app.run()
+
+        self.assertFalse(app.exception, [item.message for item in app.exception])
+        closed_operation = next(op for op in store.list_paper_operations() if op["id"] == operation_id)
+        self.assertEqual(closed_operation["state"], "closed")
+        self.assertEqual(closed_operation["exit_reason"], "stop")
+        run = store.get_pipeline_run(run_id)
+        self.assertIsNotNone(run["realized_r"])
+        banners = list(app.success) + list(app.error) + list(app.info)
+        rendered_banners = "\n".join(str(item.value) for item in banners)
+        self.assertIn("FECHADA", rendered_banners)
+        self.assertIn("stop", rendered_banners)
+
+    def test_page_operations_table_includes_exit_reason_for_a_closed_operation(self):
+        operation_id = store.open_paper_operation("BTCUSDT", "buy", 1.0, 100.0, "fixture")
+        store.close_paper_operation(operation_id, 99.0, "stop", "2026-11-16T00:00:00Z")
+        app = app_for_local_lab()
+        app.session_state["tal-nav"] = "Operações"
+        app.run()
+
+        self.assertFalse(app.exception, [item.message for item in app.exception])
+        self.assertTrue(any("exit_reason" in str(item.value) and "stop" in str(item.value)
+                            for item in app.dataframe))
+        rendered = "\n".join(str(item.value) for item in app.caption)
+        self.assertIn("Condução recalculada a cada abertura desta tela", rendered)
+
+    def test_default_portal_snapshot_includes_realized_r_and_exit_reason_for_closed_trail(self):
+        strategy = approved_setup_strategy()
+        run_id = pending_pipeline_run(strategy)
+        execution_service.confirm_open(run_id, 0.5)
+        operation = store.list_paper_operations()[0]
+        store.close_paper_operation(operation["id"], 101.0, "target",
+                                    "2026-11-16T00:10:00Z", realized_r=0.5)
+        app = AppTest.from_file(str(APP_PATH)).run()
+
+        self.assertFalse(app.exception, [item.message for item in app.exception])
+        rendered = app.get("iframe")[0].proto.srcdoc
+        self.assertIn('"realized_r": 0.5', rendered)
+        self.assertIn('"exit_reason": "target"', rendered)
 
 
 if __name__ == "__main__":

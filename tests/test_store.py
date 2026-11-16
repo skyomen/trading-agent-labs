@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -258,6 +259,94 @@ class PipelineOrchestrationTests(unittest.TestCase):
             "2026-11-16T11:00:00+00:00", "trade_candidate", status="aguardando_quantidade")
         pending = store.list_pending_pipeline_runs()
         self.assertEqual([row["id"] for row in pending], [first, second])
+
+
+class TradeManagementSchemaTests(unittest.TestCase):
+    """Entrega 8 / Fase 2: schema and store functions for closing a paper position."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = Path(self.tmp.name) / "test.db"
+        self.patch = patch.object(store, "DB_PATH", self.db)
+        self.patch.start()
+        store.initialize()
+        self.strategy_id = store.save_strategy("VBS", {"rule": "test"}, "user")
+
+    def tearDown(self):
+        self.patch.stop()
+        self.tmp.cleanup()
+
+    def test_exit_reason_column_exists_and_initialize_twice_is_safe(self):
+        with store.connect() as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(paper_operations)")}
+        self.assertIn("exit_reason", columns)
+
+        store.initialize()
+        store.initialize()
+
+        with store.connect() as conn:
+            columns_again = {row[1] for row in conn.execute("PRAGMA table_info(paper_operations)")}
+        self.assertIn("exit_reason", columns_again)
+        self.assertEqual(store.counts()["agents"], 6)
+
+    def test_close_paper_operation_closes_once_and_is_idempotent(self):
+        run_id = store.save_pipeline_run(
+            "pipeline_v1", self.strategy_id, "VBS-X", "VBS", "BTCUSDT", "2m",
+            "2026-11-16T10:00:00+00:00", "trade_candidate")
+        op_id = store.open_paper_operation("BTCUSDT", "buy", 0.5, 100.0, "pipeline",
+                                           pipeline_run_id=run_id)
+        closed_at = "2026-11-16T10:10:00+00:00"
+
+        first = store.close_paper_operation(op_id, 102.0, "target", closed_at, fees=0.5,
+                                            realized_r=2.0)
+        self.assertTrue(first)
+        operation = store.list_paper_operations()[0]
+        self.assertEqual(operation["state"], "closed")
+        self.assertEqual(operation["exit_price"], 102.0)
+        self.assertEqual(operation["exit_reason"], "target")
+        self.assertEqual(operation["closed_at"], closed_at)
+        self.assertEqual(operation["fees"], 0.5)
+        self.assertEqual(store.get_pipeline_run(run_id)["realized_r"], 2.0)
+
+        second = store.close_paper_operation(op_id, 999.0, "stop",
+                                             "2026-11-16T10:20:00+00:00", realized_r=-5.0)
+        self.assertFalse(second)
+        operation_again = store.list_paper_operations()[0]
+        self.assertEqual(operation_again["exit_price"], 102.0)
+        self.assertEqual(operation_again["exit_reason"], "target")
+        self.assertEqual(operation_again["closed_at"], closed_at)
+        self.assertEqual(store.get_pipeline_run(run_id)["realized_r"], 2.0)
+
+    def test_get_strategy_returns_the_matching_version(self):
+        first = store.save_strategy("Setup X", {"rule": "v1"}, "user")
+        second = store.save_strategy("Setup X", {"rule": "v2"}, "user")
+        self.assertEqual(json.loads(store.get_strategy(first)["rules_json"]), {"rule": "v1"})
+        self.assertEqual(json.loads(store.get_strategy(second)["rules_json"]), {"rule": "v2"})
+        self.assertIsNone(store.get_strategy(999999))
+
+    def test_get_market_bars_since_includes_boundary_bar_with_either_timestamp_suffix(self):
+        provider, symbol, timeframe = "TestProvider", "BTCUSDT", "1m"
+        before = {"timestamp": "2026-11-12T20:07:00Z", "open": 1, "high": 1, "low": 1,
+                 "close": 1, "volume": 1}
+        boundary = {"timestamp": "2026-11-12T20:08:00+00:00", "open": 1, "high": 1, "low": 1,
+                   "close": 1, "volume": 1}
+        after = {"timestamp": "2026-11-12T20:09:00Z", "open": 1, "high": 1, "low": 1,
+                "close": 1, "volume": 1}
+        store.upsert_market_bar(provider, symbol, timeframe, before)
+        store.upsert_market_bar(provider, symbol, timeframe, boundary)
+        store.upsert_market_bar(provider, symbol, timeframe, after)
+
+        # since_timestamp passed WITHOUT a timezone suffix, per the documented contract.
+        bars = store.get_market_bars_since(provider, symbol, timeframe, "2026-11-12T20:08:00")
+        self.assertEqual([bar["timestamp"] for bar in bars],
+                         [boundary["timestamp"], after["timestamp"]])
+
+        # A naive `WHERE timestamp >= ?` using this "...Z"-suffixed bound against a boundary
+        # row stored with "+00:00" would wrongly exclude it ('+' 0x2B sorts below 'Z' 0x5A).
+        # This function's second, parsed-datetime safety net must still return it.
+        defensive = store.get_market_bars_since(provider, symbol, timeframe, "2026-11-12T20:08:00Z")
+        self.assertEqual([bar["timestamp"] for bar in defensive],
+                         [boundary["timestamp"], after["timestamp"]])
 
 
 if __name__ == "__main__":

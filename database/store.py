@@ -2,6 +2,7 @@ import sqlite3
 import json
 import math
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parent / "trading.db"
@@ -277,6 +278,8 @@ def initialize():
         operation_columns = {row[1] for row in conn.execute("PRAGMA table_info(paper_operations)")}
         if "pipeline_run_id" not in operation_columns:
             conn.execute("ALTER TABLE paper_operations ADD COLUMN pipeline_run_id INTEGER REFERENCES pipeline_runs(id)")
+        if "exit_reason" not in operation_columns:
+            conn.execute("ALTER TABLE paper_operations ADD COLUMN exit_reason TEXT")
         conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS paper_operations_pipeline_run
                         ON paper_operations(pipeline_run_id) WHERE pipeline_run_id IS NOT NULL""")
         conn.execute("""
@@ -582,6 +585,13 @@ def list_strategies():
         ).fetchall()]
 
 
+def get_strategy(strategy_id):
+    """One strategy version by id, or None — the single-row counterpart of list_strategies()."""
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM strategies WHERE id=?", (strategy_id,)).fetchone()
+        return dict(row) if row else None
+
+
 def add_backtest(strategy_id, symbol, timeframe, data_source, data_sha256, metrics, status="completed"):
     metrics_json = json.dumps(metrics, ensure_ascii=False, sort_keys=True)
     with connect() as conn:
@@ -690,6 +700,51 @@ def get_market_bars(provider, symbol, timeframe, limit=1000):
         return [dict(row) for row in reversed(rows)]
 
 
+def _parse_utc_timestamp(value):
+    """Parse a market_bars-style timestamp ("...Z", "...+00:00" or no suffix) into an
+    aware UTC datetime, so callers compare real instants instead of raw strings."""
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def get_market_bars_since(provider, symbol, timeframe, since_timestamp, limit=20000):
+    """Bars from `provider`/`symbol`/`timeframe` at or after `since_timestamp` (inclusive),
+    in ASCENDING order (ORDER BY timestamp ASC LIMIT ?) — the opposite of get_market_bars(),
+    which orders DESC and truncates the START of the window. That truncation is wrong for
+    replay, which needs the start of the window (the entry bar) intact; this function instead
+    caps the END of the window when there is more than `limit` bars to return.
+
+    IMPORTANT — callers should pass `since_timestamp` WITHOUT a timezone suffix, e.g.
+    "2026-11-12T20:08:00", never "...Z" nor "...+00:00". `market_bars.timestamp` is compared
+    as a plain SQL string (`WHERE timestamp >= ?`); the live collector
+    (services/market_data.py) writes timestamps with a trailing "Z" while other parts of this
+    codebase (and its tests) use "+00:00" for the same instant. Because '+' (0x2B) sorts BELOW
+    'Z' (0x5A) as a character, a "...Z"-suffixed bound would wrongly EXCLUDE a boundary row
+    that happens to be stored with a "+00:00" suffix for that exact instant — a naive string
+    comparison silently drops the very bar a replay most needs (the entry bar). An unsuffixed
+    bound is a string-prefix of both suffixed forms, so it always sorts at or below either one
+    representing the same instant, which keeps the comparison correct no matter which suffix
+    the stored row actually uses.
+
+    As a second safety net — in case a caller ever violates that contract and passes a
+    suffixed `since_timestamp` anyway — this function first re-derives the SQL bound from the
+    PARSED instant (always re-rendered without a suffix) rather than trusting the caller's raw
+    string, and then re-validates every row it gets back by parsing its timestamp too and
+    comparing actual datetimes, never the raw strings. The boundary bar is therefore never
+    lost regardless of which suffix convention the caller, or the stored rows, happen to use.
+    """
+    since_dt = _parse_utc_timestamp(since_timestamp)
+    sql_bound = since_dt.strftime("%Y-%m-%dT%H:%M:%S")
+    with connect() as conn:
+        rows = conn.execute("""
+            SELECT timestamp,open,high,low,close,volume FROM market_bars
+            WHERE provider=? AND symbol=? AND timeframe=? AND timestamp >= ?
+            ORDER BY timestamp ASC LIMIT ?
+        """, (provider, symbol, timeframe, sql_bound, limit)).fetchall()
+    bars = [dict(row) for row in rows]
+    return [bar for bar in bars if _parse_utc_timestamp(bar["timestamp"]) >= since_dt]
+
+
 def approve_strategy(strategy_id):
     with connect() as conn:
         row = conn.execute("SELECT rules_json,status FROM strategies WHERE id=?", (strategy_id,)).fetchone()
@@ -779,6 +834,35 @@ def open_paper_operation(symbol, side, quantity, entry_price, source, pipeline_r
         """, (symbol, side, float(quantity), float(entry_price), float(fees), source,
               pipeline_run_id))
         return cur.lastrowid
+
+
+def close_paper_operation(operation_id, exit_price, exit_reason, closed_at, fees=0.0, realized_r=None):
+    """Close a simulated position. Uses a conditional UPDATE, never a read-then-write:
+
+    only a row still in state='open' is closed; `cur.rowcount == 0` means someone else
+    already closed it (a race, or a second call) and nothing is touched, including
+    `pipeline_runs`. When `cur.rowcount == 1` this call is the one that actually closed it:
+    in the SAME transaction (same connection, before commit), if the operation carries a
+    `pipeline_run_id`, also stamps `pipeline_runs.realized_r`.
+
+    Returns True when this call is the one that really closed the position, False when it
+    was already closed (race/duplicate call) and nothing was written.
+    """
+    with connect() as conn:
+        cur = conn.execute("""
+            UPDATE paper_operations
+               SET exit_price=?, exit_reason=?, closed_at=?, fees=?, state='closed'
+             WHERE id=? AND state='open'
+        """, (exit_price, exit_reason, closed_at, fees, operation_id))
+        if cur.rowcount == 0:
+            return False
+        operation = conn.execute(
+            "SELECT pipeline_run_id FROM paper_operations WHERE id=?", (operation_id,)
+        ).fetchone()
+        if operation and operation["pipeline_run_id"] is not None:
+            conn.execute("UPDATE pipeline_runs SET realized_r=? WHERE id=?",
+                        (realized_r, operation["pipeline_run_id"]))
+        return True
 
 
 def save_pipeline_run(pipeline_version, strategy_id, setup_id, setup_name, symbol, timeframe,
