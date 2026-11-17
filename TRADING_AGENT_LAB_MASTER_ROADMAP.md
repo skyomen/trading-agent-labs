@@ -1695,6 +1695,10 @@ Broker Interface
 
 para não acoplar o sistema a um fornecedor.
 
+### Registro de implementação em 17/11/2026
+
+Plano aprovado: `docs/plans/entrega-11-broker-paper.md`. O primeiro adaptador implementado é exclusivamente Binance Spot Testnet. A intenção de ordem virtual é persistida antes do envio, com client ID único; consulta, cancelamento e saída LIMIT manual têm ações explícitas. Compras só seguem de candidatos BUY autorizados e com quantidade/preço do usuário. Ordens Testnet permanecem separadas de `paper_operations` e sem stop automático. A prova offline usa adaptador falso e banco temporário; conexão/ordem na Testnet externa ainda exigem credenciais exclusivas e ação explícita do usuário. A Entrega 12 não foi iniciada.
+
 ---
 
 # 54. ENTREGA 12 — XP TRADER

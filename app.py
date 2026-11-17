@@ -20,6 +20,7 @@ from services import documents
 from services import knowledge as knowledge_service
 from services import datasets as dataset_service
 from services import execution as execution_service
+from services import broker_paper as broker_paper_service
 from services import market_data
 from services import pipeline as pipeline_service
 from services import paper_learning as paper_learning_service
@@ -105,7 +106,7 @@ function pintarOps(){
   var paper='<div class="sec">Operações simuladas registradas</div>'+pendBlock+(operations.length?operations.map(function(o){
     return '<div class="item local-activity"><time>'+localText(o.created_at)+'</time><span><b>#'+localText(o.id)+' · '+localText(o.symbol)+' · '+localText(o.side)+'</b><br>'+localText(o.state)+' · '+localText(o.quantity)+' unidades · origem: '+localText(o.source)+'</span></div>';
   }).join(""):'<p class="local-empty">Nenhuma operação simulada conciliada no SQLite. Backtests não são operações de conta.</p>');
-  $("p-ops").innerHTML=paper+'<div class="sec">Atividade registrada</div>'+(events.length?events.map(function(e){
+  $("p-ops").innerHTML=paper+blocoOrdensTestnet()+'<div class="sec">Atividade registrada</div>'+(events.length?events.map(function(e){
     var message=String(e.Atividade||"").replace(/\bindexed\b/gi,"indexado");
     return '<div class="item local-activity"><time>'+localText(localFormatTime(e["Horário"]))+'</time><span><b>'+localText(e.Agente==="Trading Lab"?"Sistema":e.Agente)+'</b><br>'+localText(localLevel(e.Nível))+' · '+localText(message)+'</span></div>';
   }).join(""):'<p class="local-empty">Ainda não há eventos locais registrados.</p>')+'<p class="note">Este histórico é lido do banco SQLite e permanece após reiniciar o aplicativo.</p>';
@@ -352,6 +353,16 @@ function blocoDiario(){
     return '<div class="local-metric"><span><b>#'+localText(j.operation_id)+' · '+localText(d.setup_name||'sem setup')+' · '+localText(d.symbol||'sem ativo')+'</b><br>'+
       'sinal '+localText(d.signal_bar_utc||'sem trilha')+' → risco '+localText(d.risk_verdict||'sem trilha')+' → entrada '+localText(d.entry_price)+' → '+result+'<br><small>Somente simulação · feed de candles fechados · '+localText(j.opened_at)+'</small></span></div>';
   }).join('');
+}
+function blocoOrdensTestnet(){
+  var orders=LOCAL.broker_paper_orders||[];
+  var head='<div class="sec">Binance Spot Testnet · ordens virtuais externas</div>'+
+    '<p class="note">'+(LOCAL.testnet_configured?'Credenciais locais presentes; conexão não verificada nesta tela.':'Desconectada: credenciais exclusivas ausentes.')+
+    ' Ordens virtuais separadas do paper local; nenhuma consulta privada ocorre nesta tela. Sem stop automático.</p>';
+  if(!orders.length)return head+'<p class="local-empty">Nenhuma ordem virtual Testnet registrada.</p>';
+  return head+orders.map(function(o){return '<div class="local-metric"><span><b>#'+localText(o.id)+' · '+localText(o.role)+' '+localText(o.side)+' '+localText(o.symbol)+'</b><br>'+
+    'estado: '+localText(o.state)+' · solicitada '+localText(o.quantity)+' · preenchida '+localText(o.executed_qty)+' · limite '+localText(o.limit_price)+' USDT<br>'+
+    '<small>Fonte: '+localText(o.provider)+' · última consulta '+localText(o.checked_at||'não realizada')+'</small></span></div>';}).join('');
 }
 function blocoAprendizado(){
   var proposals=LOCAL.paper_learning_proposals||[];
@@ -1258,6 +1269,20 @@ def page_controls():
     ]
     for label, value in rows:
         st.markdown(f'<div class="tal-connection"><strong>{label}</strong><span class="tal-state">{value}</span></div>', unsafe_allow_html=True)
+    testnet_ready = broker_paper_service.readiness()
+    st.markdown("### Binance Spot Testnet")
+    st.info("Credenciais exclusivas presentes, sem validação externa." if testnet_ready["configured"]
+            else "Desconectada: credenciais exclusivas da Testnet ausentes.")
+    if st.button("Verificar conexão virtual Testnet", key="testnet-check-connection"):
+        try:
+            state = broker_paper_service.check_connection()
+            if state["state"] == "connected":
+                st.success(f"Conta virtual consultada em {state['checked_at']}; "
+                           f"permissão de negociação: {state['can_trade']}.")
+            else:
+                st.warning(state["reason"])
+        except ValueError as exc:
+            st.error(str(exc))
     st.warning("A sala de execução não prepara ordens. Compatibilidade e simulação do XP Trader 5.0.4.34 ainda precisam de validação técnica independente.")
     st.markdown("### Conexões e biblioteca local")
     page_connections()
@@ -1821,6 +1846,45 @@ def _render_pending_run(run):
             execution_service.discard(run["id"])
             st.rerun()
 
+        if execution_plan.get("side") == "buy" and run["symbol"] in {"BTCUSDT", "ETHUSDT"}:
+            st.markdown("##### Alternativa: Binance Spot Testnet")
+            st.caption("Ambiente virtual externo; preço da Testnet. Compra LIMIT sem stop automático. "
+                       "Nenhuma ordem é enviada ao abrir esta tela.")
+            if not broker_paper_service.readiness()["configured"]:
+                st.info("Testnet desconectada: configure as credenciais exclusivas no ambiente local.")
+            else:
+                with st.form(f"testnet-preview-{run['id']}"):
+                    test_qty = st.text_input("Quantidade Testnet", key=f"testnet-qty-{run['id']}")
+                    test_price = st.text_input("Preço limite Testnet (USDT)", key=f"testnet-price-{run['id']}")
+                    preview_clicked = st.form_submit_button("Consultar cotação e filtros Testnet")
+                if preview_clicked:
+                    try:
+                        result = broker_paper_service.preview(run["symbol"], test_qty, test_price)
+                        st.session_state[f"testnet-preview-result-{run['id']}"] = result
+                    except ValueError as exc:
+                        st.session_state.pop(f"testnet-preview-result-{run['id']}", None)
+                        st.error(str(exc))
+                result = st.session_state.get(f"testnet-preview-result-{run['id']}")
+                if result and result["quantity"] == test_qty and result["limit_price"] == test_price:
+                    quote = result["quote"]
+                    st.caption(f"Testnet · bid {quote['bid']} · ask {quote['ask']} USDT · "
+                               f"consultado {quote['fetched_at']} · divergência {result['divergence_pct']:.2f}%")
+                    if result["eligible"]:
+                        with st.form(f"testnet-confirm-{run['id']}"):
+                            agreed = st.checkbox("Confirmo o envio virtual BUY LIMIT à Binance Spot Testnet "
+                                                 "sem stop automático")
+                            send_clicked = st.form_submit_button("Enviar compra virtual à Testnet")
+                        if send_clicked:
+                            try:
+                                broker_paper_service.submit_entry(run["id"], test_qty, test_price,
+                                                                  confirmed=agreed)
+                                st.session_state.pop(f"testnet-preview-result-{run['id']}", None)
+                                st.rerun()
+                            except ValueError as exc:
+                                st.error(str(exc))
+                    else:
+                        st.warning("Preço limite fora da faixa de 1% da cotação Testnet.")
+
 
 def _closed_position_banner(exit_reason, realized_r):
     """Shared by `_pipeline_verdict_banner` and `_render_open_positions`: the same
@@ -2025,6 +2089,46 @@ def page_pipeline():
     for run in pending:
         _render_pending_run(run)
 
+    st.markdown("#### Ordens virtuais Binance Spot Testnet")
+    st.caption("Separadas das operações paper locais. Estado persistido; atualização apenas por ação explícita. "
+               "Posições compradas ficam sem stop automático até a venda preencher.")
+    broker_orders = store.list_broker_paper_orders(limit=50)
+    if not broker_orders:
+        st.info("Nenhuma ordem virtual Testnet registrada.")
+    for order in broker_orders:
+        with st.expander(f"#{order['id']} · {order['role']} {order['side']} {order['symbol']} · {order['state']}"):
+            st.caption(f"Fonte: {order['provider']} · quantidade solicitada {order['quantity']} · "
+                       f"preço limite {order['limit_price']} · preenchida {order['executed_qty']} · "
+                       f"última consulta {order['checked_at'] or 'não consultada'}")
+            if order["error"]:
+                st.warning(order["error"])
+            if st.button("Consultar ordem na Testnet", key=f"testnet-reconcile-{order['id']}"):
+                try:
+                    broker_paper_service.reconcile(order["id"])
+                    st.rerun()
+                except ValueError as exc:
+                    st.error(str(exc))
+            if order["state"] not in broker_paper_service.TERMINAL:
+                if st.button("Cancelar ordem virtual", key=f"testnet-cancel-{order['id']}"):
+                    try:
+                        broker_paper_service.cancel(order["id"])
+                        st.rerun()
+                    except ValueError as exc:
+                        st.error(str(exc))
+            if order["role"] == "entry" and order["executed_qty"] > 0:
+                with st.form(f"testnet-exit-{order['id']}"):
+                    exit_qty = st.text_input("Quantidade para venda virtual", key=f"testnet-exit-qty-{order['id']}")
+                    exit_price = st.text_input("Preço limite de venda (USDT)", key=f"testnet-exit-price-{order['id']}")
+                    exit_agreed = st.checkbox("Confirmo a venda virtual LIMIT na Testnet")
+                    exit_clicked = st.form_submit_button("Enviar venda virtual")
+                if exit_clicked:
+                    try:
+                        broker_paper_service.submit_exit(order["id"], exit_qty, exit_price,
+                                                         confirmed=exit_agreed)
+                        st.rerun()
+                    except ValueError as exc:
+                        st.error(str(exc))
+
     st.markdown("#### Condução das posições abertas")
     _render_open_positions(replay_results)
 
@@ -2172,6 +2276,12 @@ def render_reference():
         "historical_datasets": overview["datasets"],
         "alpaca_configured": overview["alpaca_configured"],
         "paper_operations": store.list_paper_operations()[:50],
+        "broker_paper_orders": [
+            {key: item[key] for key in ("id", "role", "side", "symbol", "state",
+                                       "quantity", "limit_price", "executed_qty",
+                                       "provider", "checked_at")}
+            for item in store.list_broker_paper_orders(limit=50)],
+        "testnet_configured": broker_paper_service.readiness()["configured"],
         "paper_journal": [{**item, "details": json.loads(item["details_json"])}
                           for item in store.list_paper_journal(limit=50)],
         "paper_learning_proposals": [

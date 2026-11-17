@@ -18,6 +18,8 @@ def main():
             frame.locator('#vtabs button[data-v="lab"]').click(timeout=30000)
             frame.locator("#labtxt").get_by_text("Diário paper").wait_for()
             frame.locator("#labtxt").get_by_text("Aprendizado controlado").wait_for()
+            frame.locator('#tabs button[data-t="ops"]').click()
+            frame.locator("#p-ops").get_by_text("Binance Spot Testnet").wait_for()
             assert not page.evaluate("document.documentElement.scrollWidth > innerWidth + 1")
             assert not frame.locator("body").evaluate(
                 "element => element.scrollWidth > element.clientWidth + 1")
@@ -29,6 +31,8 @@ def main():
             lab.on("pageerror", lambda error: lab_errors.append(str(error)))
             lab.goto(base + "/?lab=1")
             lab.get_by_text("Trading Agent Lab").first.wait_for(timeout=30000)
+            lab.get_by_role("radio", name="Orquestração").check(force=True, timeout=30000)
+            lab.get_by_text("Binance Spot Testnet").first.wait_for(timeout=30000)
             assert not lab.evaluate("document.documentElement.scrollWidth > innerWidth + 1")
             assert not lab_errors, lab_errors
             lab.close()

@@ -1,6 +1,7 @@
 import sqlite3
 import json
 import math
+from decimal import Decimal
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -313,6 +314,30 @@ def initialize():
                 UNIQUE(strategy_id,symbol,timeframe,analyzer_version,evidence_sha256)
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS broker_paper_orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL REFERENCES pipeline_runs(id),
+                parent_order_id INTEGER REFERENCES broker_paper_orders(id),
+                provider TEXT NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('entry','exit')),
+                client_order_id TEXT NOT NULL UNIQUE,
+                exchange_order_id TEXT,
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL CHECK(side IN ('BUY','SELL')),
+                quantity TEXT NOT NULL,
+                limit_price TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'intent',
+                executed_qty REAL NOT NULL DEFAULT 0,
+                quote_qty REAL NOT NULL DEFAULT 0,
+                response_json TEXT NOT NULL DEFAULT '{}',
+                error TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                checked_at TEXT
+            )
+        """)
+        conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS broker_paper_entry_run
+                        ON broker_paper_orders(run_id) WHERE role='entry'""")
         for legacy in conn.execute("""SELECT p.* FROM paper_operations p
             LEFT JOIN paper_journal j ON j.operation_id=p.id WHERE j.id IS NULL""").fetchall():
             details = {"kind": "paper_simulation", "source": legacy["source"],
@@ -864,6 +889,104 @@ def list_paper_journal(limit=50):
         ).fetchall()]
 
 
+def list_broker_paper_orders(limit=100):
+    with connect() as conn:
+        return [dict(row) for row in conn.execute(
+            "SELECT * FROM broker_paper_orders ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()]
+
+
+def get_broker_paper_order(order_id):
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM broker_paper_orders WHERE id=?", (order_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def get_broker_entry_for_run(run_id):
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM broker_paper_orders WHERE run_id=? AND role='entry'",
+                           (run_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def reserve_broker_entry(run_id, provider, client_order_id, symbol, quantity, limit_price):
+    """Reserve a single remote paper entry before any network POST."""
+    with connect() as conn:
+        run = conn.execute("SELECT * FROM pipeline_runs WHERE id=?", (run_id,)).fetchone()
+        if (not run or run["status"] != "aguardando_quantidade"
+                or run["risk_verdict"] != "autorizado" or run["symbol"] != symbol):
+            raise ValueError("Trilha não autorizada ou não está aguardando quantidade.")
+        if not run["pending_since"]:
+            raise ValueError("Autorização sem prazo de confirmação.")
+        pending = datetime.fromisoformat(run["pending_since"].replace("Z", "+00:00"))
+        if (datetime.now(timezone.utc) - pending).total_seconds() > 900:
+            raise ValueError("Autorização expirou; avalie uma nova barra.")
+        if conn.execute("SELECT 1 FROM paper_operations WHERE pipeline_run_id=?",
+                        (run_id,)).fetchone():
+            raise ValueError("Esta trilha já abriu uma operação paper local.")
+        if conn.execute("SELECT 1 FROM broker_paper_orders WHERE run_id=? AND role='entry'",
+                        (run_id,)).fetchone():
+            raise ValueError("Esta trilha já reservou uma ordem Testnet.")
+        cur = conn.execute("""INSERT INTO broker_paper_orders
+            (run_id,provider,role,client_order_id,symbol,side,quantity,limit_price)
+            VALUES(?,?,'entry',?,?,'BUY',?,?)""",
+            (run_id, provider, client_order_id, symbol, quantity, limit_price))
+        return cur.lastrowid
+
+
+def reserve_broker_exit(entry_order_id, provider, client_order_id, quantity, limit_price):
+    """Reserve a SELL no larger than the reconciled, unsold virtual base quantity."""
+    with connect() as conn:
+        entry = conn.execute("SELECT * FROM broker_paper_orders WHERE id=? AND role='entry'",
+                             (entry_order_id,)).fetchone()
+        if not entry or entry["provider"] != provider or entry["executed_qty"] <= 0:
+            raise ValueError("Compra Testnet sem preenchimento reconciliado.")
+        exits = conn.execute("SELECT * FROM broker_paper_orders WHERE parent_order_id=?",
+                             (entry_order_id,)).fetchall()
+        if any(row["state"] not in {"CANCELED", "REJECTED", "EXPIRED", "FILLED"} for row in exits):
+            raise ValueError("Já existe saída Testnet ativa ou desconhecida.")
+        remaining = Decimal(str(entry["executed_qty"])) - sum(
+            Decimal(str(row["executed_qty"])) for row in exits)
+        if Decimal(str(quantity)) <= 0 or Decimal(str(quantity)) > remaining:
+            raise ValueError("Quantidade de saída excede a posição virtual reconciliada.")
+        cur = conn.execute("""INSERT INTO broker_paper_orders
+            (run_id,parent_order_id,provider,role,client_order_id,symbol,side,quantity,limit_price)
+            VALUES(?,?,?,'exit',?,?,'SELL',?,?)""",
+            (entry["run_id"], entry_order_id, provider, client_order_id,
+             entry["symbol"], quantity, limit_price))
+        return cur.lastrowid
+
+
+def update_broker_paper_order(order_id, state, exchange_order_id=None, executed_qty=0,
+                              quote_qty=0, response=None, error=None):
+    allowed = {"intent", "unknown", "NEW", "PARTIALLY_FILLED", "FILLED", "CANCELED",
+               "REJECTED", "EXPIRED", "PENDING_CANCEL"}
+    if state not in allowed:
+        raise ValueError("Estado de ordem Testnet desconhecido.")
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM broker_paper_orders WHERE id=?", (order_id,)).fetchone()
+        if not row:
+            raise ValueError("Ordem Testnet não encontrada.")
+        if Decimal(str(executed_qty)) < Decimal(str(row["executed_qty"])):
+            raise ValueError("Consulta reduziria quantidade já preenchida.")
+        if Decimal(str(executed_qty)) > Decimal(row["quantity"]):
+            raise ValueError("Consulta excederia quantidade solicitada.")
+        if row["state"] in {"FILLED", "CANCELED", "REJECTED", "EXPIRED"} and state != row["state"]:
+            raise ValueError("Consulta mudaria estado terminal da ordem.")
+        conn.execute("""UPDATE broker_paper_orders SET state=?,exchange_order_id=COALESCE(?,exchange_order_id),
+            executed_qty=?,quote_qty=?,response_json=?,error=?,checked_at=CURRENT_TIMESTAMP WHERE id=?""",
+            (state, exchange_order_id, executed_qty, quote_qty,
+             json.dumps(response or {}, ensure_ascii=False, sort_keys=True), error, order_id))
+        if row["role"] == "entry":
+            if float(executed_qty) > 0:
+                conn.execute("UPDATE pipeline_runs SET status='posicao_aberta' WHERE id=?",
+                             (row["run_id"],))
+            elif state in {"CANCELED", "REJECTED", "EXPIRED"}:
+                conn.execute("UPDATE pipeline_runs SET status='descartado_pelo_usuario' WHERE id=?",
+                             (row["run_id"],))
+        return True
+
+
 def list_paper_learning_source_rows():
     """Closed journal rows with their persisted operation and pipeline trail."""
     with connect() as conn:
@@ -964,6 +1087,10 @@ def open_paper_operation(symbol, side, quantity, entry_price, source, pipeline_r
     if not math.isfinite(float(fees)) or float(fees) < 0:
         raise ValueError("Taxas devem ser um número finito e não negativo.")
     with connect() as conn:
+        if pipeline_run_id and conn.execute(
+                "SELECT 1 FROM broker_paper_orders WHERE run_id=? AND role='entry'",
+                (pipeline_run_id,)).fetchone():
+            raise ValueError("Esta trilha já reservou uma ordem Testnet.")
         cur = conn.execute("""
             INSERT INTO paper_operations(symbol,side,quantity,entry_price,fees,source,
                 state,pipeline_run_id)
@@ -1131,7 +1258,9 @@ def get_pipeline_run(run_id):
 def list_pending_pipeline_runs():
     with connect() as conn:
         return [dict(row) for row in conn.execute(
-            "SELECT * FROM pipeline_runs WHERE status='aguardando_quantidade' ORDER BY id ASC"
+            """SELECT * FROM pipeline_runs r WHERE status='aguardando_quantidade'
+               AND NOT EXISTS(SELECT 1 FROM broker_paper_orders b WHERE b.run_id=r.id AND b.role='entry')
+               ORDER BY id ASC"""
         ).fetchall()]
 
 
@@ -1145,8 +1274,9 @@ def expire_stale_pipeline_runs(max_age_seconds=900):
     """
     with connect() as conn:
         rows = conn.execute("""
-            SELECT id FROM pipeline_runs
+            SELECT id FROM pipeline_runs r
             WHERE status='aguardando_quantidade' AND pending_since IS NOT NULL
+              AND NOT EXISTS(SELECT 1 FROM broker_paper_orders b WHERE b.run_id=r.id AND b.role='entry')
               AND (julianday('now') - julianday(pending_since)) * 86400 > ?
         """, (max_age_seconds,)).fetchall()
         ids = [row["id"] for row in rows]
@@ -1189,4 +1319,12 @@ def count_reserved_exposure():
         pending = conn.execute("""
             SELECT COUNT(*) FROM pipeline_runs WHERE status='aguardando_quantidade'
         """).fetchone()[0]
-        return open_positions + pending
+        broker_positions = conn.execute("""
+            SELECT COUNT(*) FROM broker_paper_orders entry
+             WHERE entry.role='entry' AND entry.executed_qty >
+               COALESCE((SELECT SUM(exit.executed_qty) FROM broker_paper_orders exit
+                         WHERE exit.parent_order_id=entry.id),0) + 1e-9
+               AND NOT EXISTS(SELECT 1 FROM pipeline_runs r
+                              WHERE r.id=entry.run_id AND r.status='aguardando_quantidade')
+        """).fetchone()[0]
+        return open_positions + pending + broker_positions

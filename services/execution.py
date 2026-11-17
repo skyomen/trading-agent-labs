@@ -64,6 +64,8 @@ def confirm_open(run_id, quantity):
     run = store.get_pipeline_run(run_id)
     if not run or run["status"] != "aguardando_quantidade":
         raise ValueError("Esta trilha não está aguardando quantidade; confirmação recusada.")
+    if store.get_broker_entry_for_run(run_id):
+        raise ValueError("Esta trilha já reservou uma ordem Testnet.")
     if not math.isfinite(float(quantity)) or float(quantity) <= 0:
         raise ValueError("Quantidade deve ser um número positivo.")
 
@@ -104,4 +106,6 @@ def discard(run_id):
     run = store.get_pipeline_run(run_id)
     if not run or run["status"] != "aguardando_quantidade":
         raise ValueError("Esta trilha não está aguardando quantidade; descarte recusado.")
+    if store.get_broker_entry_for_run(run_id):
+        raise ValueError("Esta trilha já reservou uma ordem Testnet.")
     store.update_pipeline_run_status(run_id, "descartado_pelo_usuario")
