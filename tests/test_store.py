@@ -307,6 +307,10 @@ class TradeManagementSchemaTests(unittest.TestCase):
         self.assertEqual(operation["closed_at"], closed_at)
         self.assertEqual(operation["fees"], 0.5)
         self.assertEqual(store.get_pipeline_run(run_id)["realized_r"], 2.0)
+        journal = store.list_paper_journal()
+        self.assertEqual(len(journal), 1)
+        self.assertEqual(journal[0]["state"], "closed")
+        self.assertEqual(json.loads(journal[0]["details_json"])["fees"], 0.5)
 
         second = store.close_paper_operation(op_id, 999.0, "stop",
                                              "2026-11-16T10:20:00+00:00", realized_r=-5.0)
@@ -316,6 +320,34 @@ class TradeManagementSchemaTests(unittest.TestCase):
         self.assertEqual(operation_again["exit_reason"], "target")
         self.assertEqual(operation_again["closed_at"], closed_at)
         self.assertEqual(store.get_pipeline_run(run_id)["realized_r"], 2.0)
+        self.assertEqual(len(store.list_paper_journal()), 1)
+
+    def test_journal_and_conduction_stage_roll_back_with_failed_close(self):
+        run_id = store.save_pipeline_run(
+            "pipeline_v1", self.strategy_id, "VBS-X", "VBS", "BTCUSDT", "2m",
+            "2026-11-16T10:00:00+00:00", "trade_candidate")
+        op_id = store.open_paper_operation("BTCUSDT", "buy", 1, 100, "pipeline",
+                                           pipeline_run_id=run_id)
+        with self.assertRaises(KeyError):
+            store.close_paper_operation(
+                op_id, 102, "target", "2026-11-16T10:10:00+00:00", fees=0.2,
+                realized_r=1.8, conduction_stage={"stage_index": 8})
+        self.assertEqual(store.list_paper_operations()[0]["state"], "open")
+        self.assertIsNone(store.get_pipeline_run(run_id)["realized_r"])
+        self.assertEqual(store.list_paper_journal()[0]["state"], "open")
+
+    def test_initialize_backfills_legacy_operation_without_inventing_trail(self):
+        with store.connect() as conn:
+            conn.execute("""INSERT INTO paper_operations
+                (symbol,side,quantity,entry_price,source,state)
+                VALUES('BTCUSDT','buy',1,100,'legacy','open')""")
+        store.initialize()
+        store.initialize()
+        journal = store.list_paper_journal()
+        self.assertEqual(len(journal), 1)
+        details = json.loads(journal[0]["details_json"])
+        self.assertIsNone(journal[0]["pipeline_run_id"])
+        self.assertIn("anterior ao diário", details["limitations"][0])
 
     def test_get_strategy_returns_the_matching_version(self):
         first = store.save_strategy("Setup X", {"rule": "v1"}, "user")

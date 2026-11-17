@@ -153,8 +153,18 @@ class ReplayOperationClosedTests(TradeManagementTestBase):
         run = store.get_pipeline_run(run_id)
         self.assertIsNotNone(run["realized_r"])
         unidade_r = abs(expected["entry_price"] - 99.0)
-        expected_r = (expected["exit_price"] - expected["entry_price"]) / unidade_r
+        expected_fees = (expected["entry_price"] + expected["exit_price"]) * trade_management.FEE_BPS / 10000
+        expected_r = (expected["exit_price"] - expected["entry_price"] - expected_fees) / unidade_r
         self.assertAlmostEqual(run["realized_r"], expected_r)
+        self.assertAlmostEqual(stored["fees"], expected_fees)
+        journal = store.list_paper_journal()
+        self.assertEqual(len(journal), 1)
+        self.assertEqual(journal[0]["state"], "closed")
+        details = json.loads(journal[0]["details_json"])
+        self.assertEqual(details["quote_currency"], "USDT")
+        self.assertAlmostEqual(details["net_pnl"],
+                               (stored["exit_price"] - stored["entry_price"]) * stored["quantity"] - stored["fees"])
+        self.assertAlmostEqual(details["realized_r"], run["realized_r"])
         self.assertEqual(len(run["stages"]), 1)
         self.assertEqual(run["stages"][0]["stage_index"], trade_management.CONDUCTION_STAGE_INDEX)
 

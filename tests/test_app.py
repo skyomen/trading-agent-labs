@@ -255,7 +255,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('"paper_operations": []', rendered)
         self.assertIn("SEM OPERAÇÕES", rendered)
         self.assertIn(
-            'saldo.hasClosed?((saldo.total>=0?"+":"")+saldo.total.toFixed(2)+" SALDO"):"SEM OPERAÇÕES"',
+            'saldo.hasClosed?((saldo.total>=0?"+":"")+saldo.total.toFixed(2)+" USDT P&L")',
             rendered,
         )
         self.assertNotIn('(counts.agents||0)+" AGENTES"', rendered)
@@ -685,6 +685,46 @@ class DashboardTests(unittest.TestCase):
         rendered = app.get("iframe")[0].proto.srcdoc
         self.assertIn('"realized_r": 0.5', rendered)
         self.assertIn('"exit_reason": "target"', rendered)
+
+    def test_paper_journal_appears_in_portal_and_lab(self):
+        strategy = approved_setup_strategy()
+        run_id = pending_pipeline_run(strategy)
+        execution_service.confirm_open(run_id, 0.5)
+        operation = store.list_paper_operations()[0]
+        store.close_paper_operation(operation["id"], 101.0, "target",
+                                    "2026-11-16T00:10:00Z", fees=0.1,
+                                    realized_r=0.4,
+                                    journal_details={"net_pnl": 0.15, "quote_currency": "USDT"})
+        portal = AppTest.from_file(str(APP_PATH)).run()
+        self.assertFalse(portal.exception)
+        source = portal.get("iframe")[0].proto.srcdoc
+        self.assertIn("function blocoDiario()", source)
+        self.assertIn('"paper_journal": [{', source)
+        self.assertIn('"net_pnl": 0.15', source)
+
+        lab = app_for_local_lab()
+        lab.session_state["tal-view"] = "Orquestração"
+        lab.run()
+        self.assertFalse(lab.exception)
+        self.assertTrue(any("Diário de operações simuladas" in str(item.value)
+                            for item in lab.markdown))
+
+    def test_paper_learning_empty_state_is_explicit_in_both_views(self):
+        portal = AppTest.from_file(str(APP_PATH)).run()
+        self.assertFalse(portal.exception)
+        source = portal.get("iframe")[0].proto.srcdoc
+        self.assertIn("function blocoAprendizado()", source)
+        self.assertIn('"paper_learning_proposals": []', source)
+        self.assertIn("Nenhuma hipótese paper persistida", source)
+
+        lab = app_for_local_lab()
+        lab.session_state["tal-view"] = "Orquestração"
+        lab.run()
+        self.assertFalse(lab.exception)
+        rendered = "\n".join(str(item.value) for item in lab.markdown)
+        self.assertIn("Aprendizado controlado", rendered)
+        self.assertTrue(any("Nenhuma hipótese paper persistida" in str(item.value)
+                            for item in lab.info))
 
 
 if __name__ == "__main__":

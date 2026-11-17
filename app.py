@@ -22,6 +22,7 @@ from services import datasets as dataset_service
 from services import execution as execution_service
 from services import market_data
 from services import pipeline as pipeline_service
+from services import paper_learning as paper_learning_service
 from services import trade_management as trade_management_service
 from services.agents import provider_summary, run_agent_task
 from services.backtest import parse_ohlcv_csv, run_sma_crossover
@@ -50,7 +51,7 @@ function T(x,y,text,size,fill,extra){return '<text x="'+x+'" y="'+y+'" font-size
 function cortar(text,n){text=String(text);return text.length>n?text.slice(0,n-1)+"…":text;}
 function caja(u,v,du,dv,h,top,side1,side2){var a=P(u-du/2,v-dv/2),b=P(u+du/2,v-dv/2),c=P(u+du/2,v+dv/2),d=P(u-du/2,v+dv/2);return poly([b,c,sube(c,h),sube(b,h)],side2)+poly([d,c,sube(c,h),sube(d,h)],side1)+poly([sube(a,h),sube(b,h),sube(c,h),sube(d,h)],top);}
 function kpi(label,value){return '<div class="kpi"><small>'+label+'</small><strong>'+value+'</strong></div>';}
-var LOCAL = window.TAL_DATA || {agents:[], counts:{}, documents:[], events:[], connections:[], market_feeds:[], historical_datasets:[], paper_operations:[], backtests:[], validation_runs:[], pipeline_runs:[], pipeline_pendencias:0};
+var LOCAL = window.TAL_DATA || {agents:[], counts:{}, documents:[], events:[], connections:[], market_feeds:[], historical_datasets:[], paper_operations:[], paper_journal:[], paper_learning_proposals:[], backtests:[], validation_runs:[], pipeline_runs:[], pipeline_pendencias:0};
 var ADEQUACY_TEXT = {insuficiente:"amostra insuficiente", limitrofe:"amostra limítrofe", adequada:"amostra adequada"};
 function localAdequacy(value){ return ADEQUACY_TEXT[String(value||"")] || "amostra não rotulada"; }
 function validacoes(){ return LOCAL.validation_runs || []; }
@@ -61,9 +62,9 @@ function pipelinePendencias(){ return LOCAL.pipeline_pendencias||0; }
 function feedAtual(){return (LOCAL.market_feeds||[]).filter(function(f){return f.effective_status==="connected";});}
 function feedResumo(){var n=feedAtual().length;return n?n+" feed(s) cripto de candles fechados":"Sem feed de mercado atual";}
 function saldoRealizado(){
-  var operations=(LOCAL.paper_operations||[]).filter(function(o){return o.state==="closed"&&o.exit_price!=null;}),total=0;
+  var all=(LOCAL.paper_operations||[]).filter(function(o){return o.state==="closed"&&o.exit_price!=null;}),operations=all.filter(function(o){return o.symbol==="BTCUSDT"||o.symbol==="ETHUSDT";}),total=0;
   operations.forEach(function(o){var direction=o.side==="buy"?1:-1;total+=(o.exit_price-o.entry_price)*o.quantity*direction-o.fees;});
-  return {hasClosed:operations.length>0,total:total,closedCount:operations.length};
+  return {hasClosed:operations.length>0,total:total,closedCount:operations.length,unclassified:all.length-operations.length};
 }
 var LOCAL_COLORS = ["#7fb4ff", "#5fd3d0", "#c99bff", "#e8c66a", "#ff9f6b", "#8fdcb0"];
 function localText(value){ return esc(value == null ? "" : value); }
@@ -215,7 +216,7 @@ function pintarSalaCompacta(){
   var ticker=(LOCAL.events||[]).slice(0,5).reverse().map(function(e){var actor=e.Agente==="Trading Lab"?"Sistema":e.Agente,msg=String(e.Atividade||"").replace(/\bindexed\b/gi,"indexado").replace(/\s+/g," ");return localTickerTime(e["Horário"])+" · "+actor+": "+cortar(msg,48);}).join("     ")||"Nenhuma atividade registrada no SQLite";
   var width=ticker.length*6.2+360,s='<defs><clipPath id="mobile-led" clipPathUnits="userSpaceOnUse"><rect x="16" y="49" width="358" height="23" rx="3"/></clipPath></defs>';
   s+='<rect width="390" height="'+alto+'" fill="#0f151e"/><path d="M9 9h358l14 174H9z" fill="#19222f" stroke="#33415a" stroke-width="2"/>';
-  var saldo=saldoRealizado(),saldoColor=saldo.hasClosed?(saldo.total>=0?"#42d392":"#ff6f61"):"#8d9aab",saldoLabel=saldo.hasClosed?((saldo.total>=0?"+":"")+saldo.total.toFixed(2)+" SALDO"):"SEM OPERAÇÕES",saldoFont=saldoLabel.length>13?12:15;
+  var saldo=saldoRealizado(),saldoColor=saldo.hasClosed?(saldo.total>=0?"#42d392":"#ff6f61"):"#8d9aab",saldoLabel=saldo.hasClosed?((saldo.total>=0?"+":"")+saldo.total.toFixed(2)+" USDT P&L"):(saldo.unclassified?"P&L SEM MOEDA":"SEM OPERAÇÕES"),saldoFont=saldoLabel.length>13?12:15;
   s+=T(20,31,saldoLabel,saldoFont,saldoColor,' font-weight="900"')+T(369,31,(counts.agent_runs||0)+" TAREFAS",12,"#e9eef4",' text-anchor="end" font-weight="700"');
   s+=T(20,44,docs+" PDFs indexados · "+(counts.events||0)+" eventos · "+feedResumo(),10,"#aab8c8");
   s+='<rect x="16" y="49" width="358" height="23" rx="3" fill="#0a0d12" stroke="#33415a"/><g clip-path="url(#mobile-led)"><g class="ticker" style="--fin:-'+Math.round(width)+'px;--dur:'+Math.max(24,Math.round(width/72))+'s"><text x="378" y="65" font-family="Doto,monospace" font-weight="700" font-size="11" fill="#f6c97a" xml:space="preserve">'+localText(ticker+"     "+ticker)+'</text></g></g>';
@@ -262,7 +263,7 @@ function pintarSala(){
   var eventMessage=latest?resumoEvento(latest.Atividade):"Sem atividade registrada";
   var led='<g transform="translate('+(A[0]+95)+','+(A[1]-HM+24)+') skewY(26.565)">';
   led+='<rect x="-8" y="-8" width="346" height="102" rx="6" fill="#0a0d12" stroke="#33415a"/>';
-  var saldo=saldoRealizado(),saldoColor=saldo.hasClosed?(saldo.total>=0?"#42d392":"#ff6f61"):"#8d9aab",saldoLabel=saldo.hasClosed?((saldo.total>=0?"+":"")+saldo.total.toFixed(2)+" SALDO"):"SEM OPERAÇÕES",saldoFont=saldoLabel.length>10?20:30;
+  var saldo=saldoRealizado(),saldoColor=saldo.hasClosed?(saldo.total>=0?"#42d392":"#ff6f61"):"#8d9aab",saldoLabel=saldo.hasClosed?((saldo.total>=0?"+":"")+saldo.total.toFixed(2)+" USDT P&L"):(saldo.unclassified?"P&L SEM MOEDA":"SEM OPERAÇÕES"),saldoFont=saldoLabel.length>10?20:30;
   led+='<text x="4" y="30" font-family="Doto,monospace" font-weight="900" font-size="'+saldoFont+'" fill="'+saldoColor+'">'+localText(saldoLabel)+'</text>';
   led+='<text x="326" y="30" text-anchor="end" font-family="Doto,monospace" font-weight="900" font-size="20" fill="#e9eef4">'+(counts.agent_runs||0)+' TAREFAS</text>';
   led+='<text x="4" y="50" font-family="Archivo,sans-serif" font-size="11" fill="#8d9aab">'+docs+' PDFs indexados · '+(counts.events||0)+' eventos · '+localText(feedResumo())+'</text>';
@@ -342,12 +343,29 @@ function blocoTrilha(){
   }).join("");
   return head+rows;
 }
+function blocoDiario(){
+  var entries=LOCAL.paper_journal||[];
+  if(!entries.length) return '<div class="sec">Diário paper</div><p class="local-empty">Nenhuma operação simulada registrada no diário.</p>';
+  return '<div class="sec">Diário paper</div>'+entries.map(function(j){
+    var d=j.details||{},currency=d.quote_currency||'moeda não identificada';
+    var result=j.state==='closed'?'saída '+localText(d.exit_reason||'não informada')+' · líquido '+localText(d.net_pnl)+' '+localText(currency)+' · '+localText(d.realized_r)+'R':'posição aberta, sem resultado';
+    return '<div class="local-metric"><span><b>#'+localText(j.operation_id)+' · '+localText(d.setup_name||'sem setup')+' · '+localText(d.symbol||'sem ativo')+'</b><br>'+
+      'sinal '+localText(d.signal_bar_utc||'sem trilha')+' → risco '+localText(d.risk_verdict||'sem trilha')+' → entrada '+localText(d.entry_price)+' → '+result+'<br><small>Somente simulação · feed de candles fechados · '+localText(j.opened_at)+'</small></span></div>';
+  }).join('');
+}
+function blocoAprendizado(){
+  var proposals=LOCAL.paper_learning_proposals||[];
+  if(!proposals.length) return '<div class="sec">Aprendizado controlado</div><p class="local-empty">Nenhuma hipótese paper persistida. O mínimo de projeto é 30 operações encerradas da mesma estratégia, ativo e intervalo em dois dias UTC. Aprovação humana é obrigatória.</p>';
+  return '<div class="sec">Aprendizado controlado</div><div class="local-band"><b>'+proposals.length+' hipótese(s) paper</b><span>Revisão humana obrigatória</span></div>'+proposals.map(function(p){
+    return '<div class="local-metric"><span><b>'+localText(p.symbol)+' · '+localText(p.timeframe)+'</b> · '+localText(p.status)+'<br>'+localText(p.observation)+'<br><small>SHA-256 '+localText(p.evidence_sha256.slice(0,16))+'… · hipótese, não regra aprovada</small></span></div>';
+  }).join('');
+}
 function pintarLab(){
   var results=LOCAL.backtests||[];
   $("labsvg").innerHTML="";
   var nota='<p class="note">Resultados históricos simulados de snapshots locais. Custos e detalhes de cada execução estão no laboratório completo; o período curto não valida desempenho futuro. <a href="/?lab=1" target="_blank" rel="noopener">Abrir laboratório completo</a></p>';
   if(!results.length){
-    $("labtxt").innerHTML='<p class="local-message">Ainda não há backtests registrados no banco local. Não há desempenho ou assertividade a apresentar.</p>'+blocoValidacao()+blocoTrilha()+nota;
+    $("labtxt").innerHTML='<p class="local-message">Ainda não há backtests registrados no banco local. Não há desempenho ou assertividade a apresentar.</p>'+blocoValidacao()+blocoTrilha()+blocoDiario()+blocoAprendizado()+nota;
     return;
   }
   var setup=results.filter(function(r){return r.kind==="historical_simulation";});
@@ -357,7 +375,7 @@ function pintarLab(){
     var counts=r.kind==="historical_simulation"?r.signal_count+' sinais · '+r.trade_count+' operações simuladas':r.trade_count+' operações simuladas';
     return '<div class="local-metric"><span><b>'+localText(label)+'</b><br>'+localText(counts)+' · '+localText(r.created_at)+'<br><small>Fonte: '+localText(r.source)+' · SHA-256 '+localText(r.sha256.slice(0,16))+'…</small></span></div>';
   }).join("");
-  $("labtxt").innerHTML=summary+rows+blocoValidacao()+blocoTrilha()+nota;
+  $("labtxt").innerHTML=summary+rows+blocoValidacao()+blocoTrilha()+blocoDiario()+blocoAprendizado()+nota;
 }
 function pintarEvolucion(){
   var font=window.innerWidth<500?32:17;
@@ -1255,6 +1273,14 @@ def page_capital():
         else:
             st.info("Ainda não há operações simuladas encerradas. Não exibimos saldo ou curva ilustrativa.")
         return
+    unclassified = [item for item in operations if item["symbol"] not in {"BTCUSDT", "ETHUSDT"}]
+    if unclassified:
+        st.warning(f"{len(unclassified)} operação(ões) sem moeda de cotação validada nesta vista; "
+                   "fora do P&L acumulado em USDT.")
+    operations = [item for item in operations if item["symbol"] in {"BTCUSDT", "ETHUSDT"}]
+    if not operations:
+        st.info("Nenhuma operação simulada encerrada em USDT para calcular P&L acumulado.")
+        return
     realized = []
     cumulative = 0.0
     for operation in reversed(operations):
@@ -1262,7 +1288,7 @@ def page_capital():
         pnl = (operation["exit_price"] - operation["entry_price"]) * operation["quantity"] * direction - operation["fees"]
         cumulative += pnl
         realized.append({"Operação": operation["id"], "P&L realizado": pnl, "Acumulado realizado": cumulative})
-    st.metric("P&L realizado acumulado", f"{cumulative:,.2f}", help="Não inclui saldo inicial, posições abertas ou custos não registrados.")
+    st.metric("P&L realizado acumulado · USDT", f"{cumulative:,.2f}", help="Não inclui saldo inicial, posições abertas ou custos não registrados.")
     st.line_chart([{ "operação": row["Operação"], "P&L realizado": row["Acumulado realizado"]} for row in realized], x="operação", y="P&L realizado")
     st.caption("Fonte: operações simuladas fechadas no SQLite. Não equivale ao saldo da conta.")
     st.caption("Este P&L em dinheiro usa a quantidade que você mesmo informou ao abrir cada posição, sem "
@@ -1905,6 +1931,70 @@ def _render_open_positions(replay_results):
                 st.caption(f"Condução sem avaliação nova nesta rodada: {estado}.")
 
 
+def _render_paper_learning():
+    st.markdown("#### Aprendizado controlado · paper")
+    st.caption("Análise local, determinística e sob ação explícita. Mínimo de projeto: 30 operações "
+               "encerradas da mesma estratégia, ativo e intervalo em pelo menos dois dias UTC. "
+               "O limiar não comprova robustez.")
+    approved = _pipeline_approved_strategies()
+    if not approved:
+        st.info("Nenhum setup aprovado disponível para análise paper.")
+    for strategy in approved:
+        rules = json.loads(strategy["rules_json"])
+        for symbol in market_data.SYMBOLS:
+            for timeframe in rules.get("timeframes", []):
+                status = paper_learning_service.cohort_status(strategy["id"], symbol, timeframe)
+                label = f"{strategy['name']} · {symbol} · {timeframe}"
+                st.write(f"{label}: {status['closed_count']}/30 operações encerradas válidas · "
+                         f"{status['utc_days']}/2 dias UTC")
+                if status["eligible"] and st.button("Gerar hipótese local", key=f"learn-{strategy['id']}-{symbol}-{timeframe}"):
+                    result = paper_learning_service.analyze_cohort(strategy["id"], symbol, timeframe)
+                    st.success(f"Proposta #{result['proposal_id']} registrada para revisão humana.")
+                    st.rerun()
+    proposals = store.list_paper_learning_proposals()
+    if not proposals:
+        st.info("Nenhuma hipótese paper persistida. Com a amostra atual, não há conclusão a apresentar.")
+        return
+    for proposal in proposals:
+        with st.expander(f"Proposta #{proposal['id']} · {proposal['symbol']} {proposal['timeframe']} · {proposal['status']}"):
+            evidence = json.loads(proposal["evidence_json"])
+            st.write(f"Observação: {proposal['observation']}")
+            st.write(f"Hipótese: {proposal['hypothesis']}")
+            st.caption(f"Evidência: {len(evidence['operation_ids'])} operações · SHA-256 {proposal['evidence_sha256']}")
+            for limitation in json.loads(proposal["limitations_json"]):
+                st.caption(f"• {limitation}")
+            st.json({"operation_ids": evidence["operation_ids"], "summary": evidence["summary"]})
+            if proposal["status"] == "proposed":
+                approve, reject = st.columns(2)
+                if approve.button("Aprovar hipótese", key=f"approve-paper-{proposal['id']}"):
+                    store.review_paper_learning_proposal(proposal["id"], True)
+                    st.rerun()
+                if reject.button("Rejeitar hipótese", key=f"reject-paper-{proposal['id']}"):
+                    store.review_paper_learning_proposal(proposal["id"], False)
+                    st.rerun()
+            elif proposal["status"] == "approved" and proposal["draft_strategy_id"] is None:
+                parent = store.get_strategy(proposal["strategy_id"])
+                if parent:
+                    st.warning("Um rascunho novo não é executável. Altere apenas pattern, entry, "
+                               "stop, target, management ou filters; identidade e fontes ficam preservadas. "
+                               "O trailing atual ainda é decidido pelo nome do setup.")
+                    with st.form(f"paper-draft-{proposal['id']}"):
+                        edited = st.text_area("Regras editadas da nova versão (JSON)",
+                                              value=json.dumps(json.loads(parent["rules_json"]),
+                                                               ensure_ascii=False, indent=2), height=220)
+                        submit = st.form_submit_button("Criar versão como rascunho")
+                    if submit:
+                        try:
+                            draft_id = paper_learning_service.create_draft(proposal["id"], json.loads(edited))
+                        except (ValueError, json.JSONDecodeError) as exc:
+                            st.error(str(exc))
+                        else:
+                            st.success(f"Rascunho de estratégia #{draft_id} criado; versão anterior preservada.")
+                            st.rerun()
+            elif proposal["draft_strategy_id"] is not None:
+                st.info(f"Rascunho de estratégia #{proposal['draft_strategy_id']} vinculado; aguardando revisão das regras.")
+
+
 def page_pipeline():
     replay_results = _replay_open_positions()
     store.expire_stale_pipeline_runs(max_age_seconds=900)
@@ -1944,6 +2034,29 @@ def page_pipeline():
         st.info("Nenhuma trilha de decisão foi avaliada ainda.")
     for run in runs:
         _render_pipeline_history_entry(run)
+
+    st.markdown("#### Diário de operações simuladas")
+    journal = store.list_paper_journal()
+    if not journal:
+        st.info("Nenhuma operação simulada registrada no diário.")
+    for item in journal:
+        details = json.loads(item["details_json"])
+        label = (f"#{item['operation_id']} · {details.get('setup_name') or 'sem setup'} · "
+                 f"{details.get('symbol') or 'sem ativo'} · {item['state']}")
+        with st.expander(label):
+            st.caption("Somente simulação · candles fechados persistidos · nenhuma ordem real")
+            st.write(f"Sinal: {details.get('signal_bar_utc') or 'sem trilha'}")
+            st.write(f"Risco: {details.get('risk_verdict') or 'sem trilha'}")
+            st.write(f"Entrada: {details.get('entry_price')} · quantidade: {details.get('quantity')}")
+            if item["state"] == "closed":
+                st.write(f"Saída: {details.get('exit_price')} · {details.get('exit_reason')}")
+                st.write(f"Taxas simuladas: {details.get('fees')} · líquido: {details.get('net_pnl')} "
+                         f"{details.get('quote_currency') or '(moeda não identificada)'} · "
+                         f"{details.get('realized_r')}R")
+            else:
+                st.info("Posição aberta; saída e resultado ainda não registrados.")
+            st.json(details)
+    _render_paper_learning()
 
 
 def local_lab_main():
@@ -2059,6 +2172,12 @@ def render_reference():
         "historical_datasets": overview["datasets"],
         "alpaca_configured": overview["alpaca_configured"],
         "paper_operations": store.list_paper_operations()[:50],
+        "paper_journal": [{**item, "details": json.loads(item["details_json"])}
+                          for item in store.list_paper_journal(limit=50)],
+        "paper_learning_proposals": [
+            {key: item[key] for key in ("id", "symbol", "timeframe", "status",
+                                       "observation", "evidence_sha256")}
+            for item in store.list_paper_learning_proposals(limit=50)],
         "backtests": backtest_snapshot,
         "validation_runs": validation_snapshot,
         "pipeline_runs": pipeline_snapshot,

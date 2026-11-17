@@ -1648,6 +1648,12 @@ signal
 
 Ciclo completo sem dinheiro real.
 
+### Registro de execução em 17/11/2026
+
+Plano `docs/plans/entrega-9-paper-trading.md` aprovado pelo usuário. A entrega fecha o ciclo local já iniciado nas Entregas 7 e 8: abertura com quantidade humana, condução sob demanda, saída por stop/alvo/trailing e diário em `paper_journal` com uma ficha por operação. A ficha é criada na abertura e completada no fechamento; a migração identifica operações legadas sem inventar sinal ou condução. `close_paper_operation` grava posição, resultado líquido em R, diário e estágio 8 na mesma transação condicional. Taxas de 10 bps por lado usam o nocional de cada lado; slippage de 5 bps adverso já está no preço de saída, sem desconto duplo. Evolução do capital identifica P&L em USDT apenas para BTCUSDT/ETHUSDT.
+
+Provas: `python main.py test` passou com a suíte completa; `python -m scripts.run_delivery9 --prova` demonstrou o ciclo e o bloqueio por exposição usando somente banco temporário/candles sintéticos, conferindo diário único e reconciliação de custos/R. `scripts/check_delivery9_ui.py` verificou portal e Laboratório nas três larguras contratadas (1440×1000, 390×844, 320×740), sem erro de JavaScript nem rolagem horizontal. Limitações: coletor Binance separado, condução sob demanda, amostra de validação insuficiente e inconsistência conhecida do trailing por nome de setup.
+
 ---
 
 # 52. ENTREGA 10 — APRENDIZADO CONTROLADO
@@ -1668,6 +1674,12 @@ O sistema gera hipóteses.
 ### Critério de aceite
 
 O usuário consegue aprovar/rejeitar propostas de aprendizado e criar novas versões.
+
+### Registro de execução em 17/11/2026
+
+Plano `docs/plans/entrega-10-aprendizado-controlado.md` aprovado pelo usuário. `services/paper_learning.py` gera hipóteses locais e determinísticas somente para uma coorte de mesma estratégia, símbolo e intervalo com 30 operações paper fechadas e íntegras em pelo menos dois dias UTC. O limiar é parâmetro de projeto, não afirmação de robustez. `paper_learning_proposals` registra versão do analisador, IDs e digest SHA-256 da evidência, observação, hipótese, limitações, revisão humana e vínculo opcional ao rascunho. Repetir a mesma análise não duplica proposta. Aprovar/rejeitar não altera estratégia ou memória; criar uma nova versão exige edição manual dos campos operacionais, reconferência da evidência e grava apenas `draft` com aprovação das regras pendente. O portal e o Laboratório apresentam contagens e estados persistidos. No banco local havia zero operações paper encerradas, logo nenhuma hipótese real foi criada.
+
+Provas: `python main.py test` passou com 142 testes, incluindo revisão e criação de rascunho pela UI. `python -m scripts.run_delivery10 --prova` demonstrou limiar, revisão, versão rascunho e idempotência em banco temporário com operações sintéticas. `scripts/check_delivery9_ui.py` verificou portal e Laboratório em 1440×1000, 390×844 e 320×740, sem erro de JavaScript ou rolagem horizontal. `python main.py status` aplicou a migração ao banco local; zero diários e zero propostas paper após a prova. Limitações: condução paper sob demanda, amostra histórica de validação insuficiente, trailing ainda por nome de setup; nenhuma promoção ou otimização automática.
 
 ---
 

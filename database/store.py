@@ -283,6 +283,51 @@ def initialize():
         conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS paper_operations_pipeline_run
                         ON paper_operations(pipeline_run_id) WHERE pipeline_run_id IS NOT NULL""")
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS paper_journal (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                operation_id INTEGER NOT NULL UNIQUE REFERENCES paper_operations(id),
+                pipeline_run_id INTEGER REFERENCES pipeline_runs(id),
+                journal_version TEXT NOT NULL,
+                state TEXT NOT NULL CHECK(state IN ('open','closed','cancelled')),
+                opened_at TEXT NOT NULL,
+                closed_at TEXT,
+                details_json TEXT NOT NULL DEFAULT '{}'
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS paper_learning_proposals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                strategy_id INTEGER NOT NULL REFERENCES strategies(id),
+                symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
+                analyzer_version TEXT NOT NULL,
+                evidence_sha256 TEXT NOT NULL,
+                evidence_json TEXT NOT NULL,
+                observation TEXT NOT NULL,
+                hypothesis TEXT NOT NULL,
+                limitations_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'proposed'
+                    CHECK(status IN ('proposed','approved','rejected')),
+                draft_strategy_id INTEGER REFERENCES strategies(id),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                reviewed_at TEXT, reviewed_by TEXT,
+                UNIQUE(strategy_id,symbol,timeframe,analyzer_version,evidence_sha256)
+            )
+        """)
+        for legacy in conn.execute("""SELECT p.* FROM paper_operations p
+            LEFT JOIN paper_journal j ON j.operation_id=p.id WHERE j.id IS NULL""").fetchall():
+            details = {"kind": "paper_simulation", "source": legacy["source"],
+                       "symbol": legacy["symbol"], "side": legacy["side"],
+                       "quantity": legacy["quantity"], "entry_price": legacy["entry_price"],
+                       "exit_price": legacy["exit_price"], "exit_reason": legacy["exit_reason"],
+                       "fees": legacy["fees"], "limitations":
+                       ["Registro anterior ao diário; detalhes de sinal e condução não reconstruídos."]}
+            conn.execute("""INSERT INTO paper_journal
+                (operation_id,pipeline_run_id,journal_version,state,opened_at,closed_at,details_json)
+                VALUES(?,?,? ,?,?,?,?)""",
+                (legacy["id"], legacy["pipeline_run_id"], "paper_journal_v1",
+                 legacy["state"], legacy["created_at"],
+                 legacy["closed_at"], json.dumps(details, ensure_ascii=False, sort_keys=True)))
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS connections (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 key TEXT NOT NULL UNIQUE,
@@ -812,6 +857,98 @@ def list_paper_operations(state=None):
         return [dict(row) for row in conn.execute(query, params).fetchall()]
 
 
+def list_paper_journal(limit=50):
+    with connect() as conn:
+        return [dict(row) for row in conn.execute(
+            "SELECT * FROM paper_journal ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()]
+
+
+def list_paper_learning_source_rows():
+    """Closed journal rows with their persisted operation and pipeline trail."""
+    with connect() as conn:
+        return [dict(row) for row in conn.execute("""
+            SELECT j.operation_id,j.pipeline_run_id,j.state AS journal_state,j.details_json,
+                   p.pipeline_run_id AS operation_pipeline_run_id,
+                   p.state AS operation_state,p.symbol,p.side,p.quantity,p.entry_price,
+                   p.exit_price,p.exit_reason,p.fees,p.closed_at,
+                   r.strategy_id,r.setup_name,r.timeframe,r.signal_bar_utc,
+                   r.risk_verdict,r.status AS run_status,r.realized_r,r.report_json,
+                   s.id AS conduction_stage_id
+              FROM paper_journal j
+              JOIN paper_operations p ON p.id=j.operation_id
+              JOIN pipeline_runs r ON r.id=j.pipeline_run_id
+              LEFT JOIN pipeline_stages s ON s.run_id=r.id AND s.stage_index=8
+             WHERE j.state='closed' AND p.state='closed'
+             ORDER BY j.operation_id
+        """).fetchall()]
+
+
+def list_paper_learning_proposals(limit=100):
+    with connect() as conn:
+        return [dict(row) for row in conn.execute(
+            "SELECT * FROM paper_learning_proposals ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()]
+
+
+def get_paper_learning_proposal(proposal_id):
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM paper_learning_proposals WHERE id=?",
+                           (proposal_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def save_paper_learning_proposal(strategy_id, symbol, timeframe, analyzer_version,
+                                 evidence_sha256, evidence, observation, hypothesis, limitations):
+    with connect() as conn:
+        conn.execute("""INSERT INTO paper_learning_proposals
+            (strategy_id,symbol,timeframe,analyzer_version,evidence_sha256,evidence_json,
+             observation,hypothesis,limitations_json)
+            VALUES(?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(strategy_id,symbol,timeframe,analyzer_version,evidence_sha256)
+            DO NOTHING""",
+            (strategy_id, symbol, timeframe, analyzer_version, evidence_sha256,
+             json.dumps(evidence, ensure_ascii=False, sort_keys=True), observation, hypothesis,
+             json.dumps(limitations, ensure_ascii=False, sort_keys=True)))
+        return conn.execute("""SELECT id FROM paper_learning_proposals WHERE
+            strategy_id=? AND symbol=? AND timeframe=? AND analyzer_version=? AND evidence_sha256=?""",
+            (strategy_id, symbol, timeframe, analyzer_version, evidence_sha256)).fetchone()[0]
+
+
+def review_paper_learning_proposal(proposal_id, approved, reviewer="Usuário"):
+    with connect() as conn:
+        return conn.execute("""UPDATE paper_learning_proposals
+            SET status=?,reviewed_at=CURRENT_TIMESTAMP,reviewed_by=?
+            WHERE id=? AND status='proposed'""",
+            ("approved" if approved else "rejected", reviewer, proposal_id)).rowcount == 1
+
+
+def create_paper_learning_draft(proposal_id, parent_strategy_id, rules):
+    """Create exactly one draft for an approved proposal, atomically linking it."""
+    with connect() as conn:
+        proposal = conn.execute("SELECT * FROM paper_learning_proposals WHERE id=?",
+                                (proposal_id,)).fetchone()
+        if not proposal or proposal["status"] != "approved":
+            raise ValueError("A proposta precisa de aprovação humana antes do rascunho.")
+        if proposal["strategy_id"] != parent_strategy_id:
+            raise ValueError("Estratégia de origem não corresponde à proposta.")
+        if proposal["draft_strategy_id"] is not None:
+            raise ValueError("Esta proposta já gerou um rascunho.")
+        parent = conn.execute("SELECT * FROM strategies WHERE id=?",
+                              (parent_strategy_id,)).fetchone()
+        if not parent or parent["status"] != "approved":
+            raise ValueError("A versão de origem precisa continuar aprovada.")
+        version = conn.execute("SELECT COALESCE(MAX(version),0)+1 FROM strategies WHERE name=?",
+                               (parent["name"],)).fetchone()[0]
+        cur = conn.execute("""INSERT INTO strategies(name,version,rules_json,status,source)
+                              VALUES(?,?,?,'draft',?)""",
+                           (parent["name"], version, json.dumps(rules, ensure_ascii=False, sort_keys=True),
+                            f"aprendizado paper proposta #{proposal_id}; origem estratégia #{parent_strategy_id}"))
+        conn.execute("UPDATE paper_learning_proposals SET draft_strategy_id=? WHERE id=?",
+                     (cur.lastrowid, proposal_id))
+        return cur.lastrowid
+
+
 def open_paper_operation(symbol, side, quantity, entry_price, source, pipeline_run_id=None, fees=0.0):
     """Insert a real (simulated) open position; never fills exit_price/closed_at.
 
@@ -833,10 +970,30 @@ def open_paper_operation(symbol, side, quantity, entry_price, source, pipeline_r
             VALUES(?,?,?,?,?,?,'open',?)
         """, (symbol, side, float(quantity), float(entry_price), float(fees), source,
               pipeline_run_id))
-        return cur.lastrowid
+        operation_id = cur.lastrowid
+        run = conn.execute("SELECT * FROM pipeline_runs WHERE id=?", (pipeline_run_id,)).fetchone() if pipeline_run_id else None
+        report = json.loads(run["report_json"]) if run else {}
+        details = {
+            "kind": "paper_simulation", "source": source,
+            "symbol": symbol, "side": side, "quantity": float(quantity),
+            "entry_price": float(entry_price),
+            "signal_bar_utc": run["signal_bar_utc"] if run else None,
+            "setup_name": run["setup_name"] if run else None,
+            "timeframe": run["timeframe"] if run else None,
+            "risk_verdict": run["risk_verdict"] if run else None,
+            "risk": report.get("risk"), "execution": report.get("execution"),
+            "limitations": ["Trilha de pipeline ausente; origem legada."] if not run else
+                           ["Condução sob demanda; feed de candles fechados, não preço executável."],
+        }
+        conn.execute("""INSERT INTO paper_journal(operation_id,pipeline_run_id,journal_version,state,opened_at,details_json)
+                        VALUES(?,?,?,'open',?,?)""",
+                     (operation_id, pipeline_run_id, "paper_journal_v1",
+                      datetime.now(timezone.utc).isoformat(), json.dumps(details, ensure_ascii=False, sort_keys=True)))
+        return operation_id
 
 
-def close_paper_operation(operation_id, exit_price, exit_reason, closed_at, fees=0.0, realized_r=None):
+def close_paper_operation(operation_id, exit_price, exit_reason, closed_at, fees=0.0, realized_r=None,
+                          journal_details=None, conduction_stage=None):
     """Close a simulated position. Uses a conditional UPDATE, never a read-then-write:
 
     only a row still in state='open' is closed; `cur.rowcount == 0` means someone else
@@ -862,6 +1019,27 @@ def close_paper_operation(operation_id, exit_price, exit_reason, closed_at, fees
         if operation and operation["pipeline_run_id"] is not None:
             conn.execute("UPDATE pipeline_runs SET realized_r=? WHERE id=?",
                         (realized_r, operation["pipeline_run_id"]))
+        journal = conn.execute("SELECT details_json FROM paper_journal WHERE operation_id=?",
+                               (operation_id,)).fetchone()
+        if journal:
+            details = json.loads(journal["details_json"])
+            details.update(journal_details or {})
+            details.update({"exit_price": exit_price, "exit_reason": exit_reason,
+                            "fees": fees, "realized_r": realized_r})
+            conn.execute("""UPDATE paper_journal SET state='closed',closed_at=?,details_json=?
+                            WHERE operation_id=?""",
+                         (closed_at, json.dumps(details, ensure_ascii=False, sort_keys=True), operation_id))
+        if conduction_stage and operation and operation["pipeline_run_id"] is not None:
+            stage = conduction_stage
+            conn.execute("""INSERT INTO pipeline_stages
+                (run_id,stage_index,stage,agent,status,summary,input_json,output_json,limitations_json)
+                VALUES(?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(run_id,stage_index) DO NOTHING""",
+                (operation["pipeline_run_id"], stage["stage_index"], stage["stage"],
+                 stage["agent"], stage["status"], stage["summary"],
+                 json.dumps(stage["input"], ensure_ascii=False, sort_keys=True),
+                 json.dumps(stage["output"], ensure_ascii=False, sort_keys=True),
+                 json.dumps(stage["limitations"], ensure_ascii=False, sort_keys=True)))
         return True
 
 

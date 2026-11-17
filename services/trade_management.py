@@ -118,8 +118,13 @@ def replay_operation(operation):
 
     trade = result["trade"]
     unidade_r = abs(entry_price - stop)
-    realized_r = (None if unidade_r <= 1e-9 else
-                  direction * (trade["exit_price"] - entry_price) / unidade_r)
+    quantity = operation["quantity"]
+    entry_fee = entry_price * quantity * FEE_BPS / 10000
+    exit_fee = trade["exit_price"] * quantity * FEE_BPS / 10000
+    fees = entry_fee + exit_fee
+    gross_pnl = direction * (trade["exit_price"] - entry_price) * quantity
+    net_pnl = gross_pnl - fees
+    realized_r = None if unidade_r <= 1e-9 else net_pnl / (unidade_r * quantity)
 
     motivo_do_motor = trade["exit_reason"]
     if motivo_do_motor == "stop" and trade["final_stop"] != trade["initial_stop"]:
@@ -127,26 +132,36 @@ def replay_operation(operation):
     else:
         exit_reason_persistido = motivo_do_motor
 
-    closed = store.close_paper_operation(
-        operation["id"], trade["exit_price"], exit_reason_persistido,
-        datetime.now(timezone.utc).isoformat(), fees=0.0, realized_r=realized_r)
-    if not closed:
-        return {"estado": "ja_fechada"}
-
     summary = (f"{run['symbol']} {run['timeframe']}: operação #{operation['id']} fechada por "
               f"{exit_reason_persistido} em {trade['exit_time']}; realized_r="
               f"{realized_r if realized_r is not None else 'indefinido'}.")
-    store.add_pipeline_stage(
-        run["id"], CONDUCTION_STAGE_INDEX, "conduction", "Execution Agent", "ok",
-        summary=summary,
-        input_json={"operation_id": operation["id"], "entry_time": position["entry_time"],
-                   "janela_desde": since_param, "barras_agregadas": len(aggregated),
-                   "indice_entrada": entry_index, "cobertura_agregacao": coverage},
-        output_json={**trade, "exit_reason_persistido": exit_reason_persistido,
-                    "motivo_do_motor": motivo_do_motor, "realized_r": realized_r,
-                    "management_declarado_nao_aplicado": management_declarado_nao_aplicado},
-        limitations_json=["Trailing decidido por nome de setup; rules_json.management é dado "
-                         "declarado e não aplicado (DEC-2026-11-16 Entrega 8)."])
+    limitations = ["Trailing decidido por nome de setup; rules_json.management é dado "
+                   "declarado e não aplicado (DEC-2026-11-16 Entrega 8)."]
+    stage = {
+        "stage_index": CONDUCTION_STAGE_INDEX, "stage": "conduction",
+        "agent": "Execution Agent", "status": "ok", "summary": summary,
+        "input": {"operation_id": operation["id"], "entry_time": position["entry_time"],
+                  "janela_desde": since_param, "barras_agregadas": len(aggregated),
+                  "indice_entrada": entry_index, "cobertura_agregacao": coverage},
+        "output": {**trade, "exit_reason_persistido": exit_reason_persistido,
+                   "motivo_do_motor": motivo_do_motor, "realized_r": realized_r,
+                   "management_declarado_nao_aplicado": management_declarado_nao_aplicado,
+                   "entry_fee": entry_fee, "exit_fee": exit_fee, "net_pnl": net_pnl},
+        "limitations": limitations,
+    }
+    closed = store.close_paper_operation(
+        operation["id"], trade["exit_price"], exit_reason_persistido,
+        datetime.now(timezone.utc).isoformat(), fees=fees, realized_r=realized_r,
+        journal_details={"entry_time": position["entry_time"], "exit_time": trade["exit_time"],
+                         "conduction": stage["output"], "fee_bps_per_side": FEE_BPS,
+                         "slippage_bps_per_side": SLIPPAGE_BPS,
+                         "entry_fee": entry_fee, "exit_fee": exit_fee,
+                         "gross_pnl": gross_pnl, "net_pnl": net_pnl,
+                         "quote_currency": "USDT" if run["symbol"] in {"BTCUSDT", "ETHUSDT"} else None,
+                         "limitations": limitations},
+        conduction_stage=stage)
+    if not closed:
+        return {"estado": "ja_fechada"}
     store.add_event("Execution Agent", "INFO", summary)
 
     return {"estado": "fechada", "exit_reason": exit_reason_persistido,
