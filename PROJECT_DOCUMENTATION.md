@@ -1,6 +1,6 @@
 # Referência técnica — Trading Agent Lab
 
-> Documentação do comportamento implementado e do estado observado em 13/11/2026. O código é a autoridade para implementação; `AGENTS.md` contém requisitos e decisões vigentes. Esta referência descreve o sistema existente e separa claramente o que ainda depende de dados, configuração ou decisão humana.
+> Documentação do comportamento implementado e do estado observado até 17/11/2026. O código é a autoridade para implementação; `AGENTS.md` contém requisitos e decisões vigentes. Esta referência descreve o sistema existente e separa claramente o que ainda depende de dados, configuração ou decisão humana.
 
 ## 1. Visão geral
 
@@ -319,6 +319,7 @@ No snapshot local, não havia dataset, barra, estratégia nem backtest persistid
 - Operações simuladas ficam em `paper_operations`, com quantidade/preço positivos, taxa não negativa e estados `open`, `closed` ou `cancelled`. O capital usa operações encerradas e não supõe saldo inicial.
 - A tela de Mercado representa criptoativos e ações dos EUA sem feed, até que fonte específica e verificável seja configurada.
 - XP Trader **5.0.4.34** aparece como não conectado. Não se presume compatibilidade com Profit Pro/Ultra nem que ProfitDLL cubra a licença ou ativos necessários.
+- A investigação específica da Entrega 12 está em `docs/integrations/xp-trader-5.0.4.34.md`: matriz de dados, API, SDK, simulação, execução e limitações com fontes oficiais. ProfitDLL é produto licenciado separadamente; suas capacidades genéricas não confirmam direito de uso na licença XP Trader do usuário.
 - Integração XP depende de confirmação de licença, documentação e SDK para a versão exata e conta de simulação. Nenhuma ordem é encaminhada no escopo atual.
 - Conexões mostram estado e requisitos; segredos não são armazenados em SQLite. Provedores externos só são chamados por ação explícita.
 
@@ -377,7 +378,7 @@ O comando de prova do projeto é `python main.py test`. Na Entrega 2, 35 testes 
 
 - Escolher/configurar provedor LLM e autorizar por provedor quais dados podem ser compartilhados.
 - Para ações dos EUA em tempo real, implementar e validar um coletor próprio; os snapshots Market History e Alpaca IEX disponíveis neste ambiente são históricos, sem streaming de ações.
-- Confirmar licença, documentação e SDK do XP Trader 5.0.4.34 e conta de simulação antes de qualquer integração.
+- Confirmar licença, documentação e SDK do XP Trader 5.0.4.34, direitos de dados e conta exclusivamente simulada roteável antes de qualquer integração; ver matriz da Entrega 12.
 - Definir/implementar o fluxo operacional de registro de operações simuladas conforme os dados e regras que forem aprovados; a tabela e a apresentação existem, mas o snapshot tem zero operações.
 - Avaliar os quatro setups em janelas independentes e mais longas; a demonstração da Entrega 5 usa apenas cerca de 16h38 de candles de cada par e não sustenta inferência estatística. Enquanto isso não mudar, a validação da Entrega 6 continuará rotulando essas combinações como amostra insuficiente — o rótulo é o resultado correto, não um defeito a corrigir no código.
 - Comparar períodos e procurar degradação, itens da seção 10 do roadmap deixados explicitamente fora da Entrega 6: ambos exigem várias janelas longas e independentes que o histórico atual não oferece. Dependem de coleta contínua mais longa, não de implementação.
@@ -389,6 +390,12 @@ O comando de prova do projeto é `python main.py test`. Na Entrega 2, 35 testes 
 - Entrega 8: uma posição `open` que já deveria ter fechado (bateu stop/alvo) só fecha quando alguém abre a tela de condução — se ninguém abrir, ela continua `open` mesmo tendo batido o stop há horas; isso é limitação conhecida, não bug. A condução continua dependente do coletor Binance estar rodando (mesma dependência já aceita para o sinal na Entrega 7, agora também para conduzir posição aberta). A inconsistência entre `rules_json.management` (dado declarado) e o comportamento real de trailing (hardcoded por nome de setup) agora existe em DOIS motores (backtest e paper engine), não corrigida nesta entrega — candidata a correção numa entrega futura dedicada.
 
 ## 17. Rastreabilidade
+
+### Entrega 12: Investigação XP Trader 5.0.4.34
+
+Plano `docs/plans/entrega-12-xp-trader.md` aprovado pelo usuário em 17/11/2026. `docs/integrations/xp-trader-5.0.4.34.md` registra, por tema, evidência pública, conclusão limitada à versão/licença informada e perguntas de validação para Nelogica/XP. As fontes oficiais identificam XP Trader como White Label, ProfitDLL como produto separado e recursos genéricos de dados/roteamento para B3. Não foi obtida matriz de compatibilidade da licença XP Trader 5.0.4.34 com a DLL, SDK aplicável nem confirmação de que uma conta simulada XP seja roteável. Isso é ausência de evidência neste ambiente, não prova de inexistência. O estado XP continua desconectado e nenhum código de conexão, login, feed ou envio XP foi criado. BTCUSDT/ETHUSDT e AAPL/MSFT mantêm as fontes próprias já documentadas.
+
+Provas: `python main.py test` passou com 150 testes antes da investigação. Após a atualização documental, `python main.py test`, `python main.py status` e inspeção do diff confirmam que o comportamento executável e os seis agentes persistidos não mudaram. A Entrega 13 não foi iniciada.
 
 ### Entrega 11: Broker Paper
 

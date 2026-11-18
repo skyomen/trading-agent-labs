@@ -1720,6 +1720,10 @@ Documentar:
 
 Não presumir compatibilidade com Profit Pro.
 
+### Registro de investigação em 17/11/2026
+
+Plano aprovado: `docs/plans/entrega-12-xp-trader.md`. A matriz em `docs/integrations/xp-trader-5.0.4.34.md` distingue o XP Trader White Label das capacidades genéricas da ProfitDLL. Fontes oficiais descrevem dados e roteamento B3 pela ProfitDLL, produto licenciado separadamente; não confirmam acesso pela licença XP Trader 5.0.4.34 nem roteamento para conta simulada específica. SDK e manual da licença não estão no projeto. XP permanece desconectado, sem DLL carregada, login ou ordem. Integração depende de confirmação documental e novo plano; a Entrega 13 não foi iniciada.
+
 ---
 
 # 55. ENTREGA 13 — MULTIUSUÁRIO

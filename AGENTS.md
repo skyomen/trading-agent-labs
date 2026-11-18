@@ -92,6 +92,11 @@ Laboratório local para acompanhar seis agentes de pesquisa intraday, organizar 
 - **REQ-26** — Binance Spot Testnet é o único adaptador de ordens virtuais externas, com host fixo e credenciais exclusivas locais. Somente candidatos BUY BTCUSDT/ETHUSDT autorizados pelo Risk podem virar compra LIMIT, após quantidade, preço, cotação/filtros Testnet e confirmação humana explícitos. VSS/BDP vendidos não abrem short. A venda de saída é manual e limitada à quantidade comprada reconciliada; não há stop automático. Ordens Testnet ficam separadas de `paper_operations`, P&L e saldo local. Nenhuma chamada privada ocorre ao renderizar a tela, e nenhuma ordem real é preparada ou enviada.
 - **TRD-15** — `services/brokers/base.py` define a interface e `services/brokers/binance_spot_testnet.py` implementa HTTP assinado apenas em `https://testnet.binance.vision/api/v3/`. `services/broker_paper.py` governa o portão humano, persistência de intenção antes de POST, consulta, cancelamento e venda; `database/store.py` persiste em `broker_paper_orders` com client ID único. Timeout fica `unknown` e não reenvia automaticamente. `python -m scripts.run_delivery11 --prova` demonstra o fluxo em banco temporário com adaptador falso.
 
+## Entrega 12 — Investigação XP Trader
+
+- **REQ-27** — A investigação do XP Trader 5.0.4.34 separa capacidades genéricas da ProfitDLL de direitos da licença XP. Dados, API, SDK, simulação, execução e limitações têm evidência e lacunas registradas em `docs/integrations/xp-trader-5.0.4.34.md`. Sem confirmação específica de licença, SDK e conta exclusivamente simulada roteável, XP permanece desconectado; nenhum adaptador XP, login ou ordem será implementado nesta entrega. BTCUSDT, ETHUSDT, AAPL e MSFT continuam em fontes próprias.
+- **TRD-16** — Uma integração XP futura exige nova decisão e plano, manual/SDK oficial versionado com hash, direitos de dados e prova de separação inequívoca entre conta simulada e real. A documentação pública da ProfitDLL não substitui essa confirmação.
+
 ## Contrato visual e rastreabilidade
 
 - Para REQ-13, `referencia.html` continua como autoridade estrutural e visual; o portal gera uma versão pt-BR ligada ao SQLite, conforme `DEC-2026-11-12-portal-localizado-dados-locais`. O antigo `trading-office-preview.html` continua como referência funcional do portal local.
