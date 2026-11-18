@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -2368,6 +2370,11 @@ def render_reference():
 def _authenticate_ui():
     actor = st.session_state.get("auth-user")
     key = st.session_state.get("vault-key")
+    if actor and os.environ.get("TRADING_LAB_ONLINE_MODE") == "1":
+        issued_at = st.session_state.get("auth-at", 0)
+        if not isinstance(issued_at, (int, float)) or time.time() - issued_at > 8 * 3600:
+            st.session_state.clear()
+            actor, key = None, None
     if actor and isinstance(key, bytes):
         persisted = store.get_identity_user(user_id=actor.get("id"))
         if persisted and persisted["username"] == actor.get("username") and persisted["role"] == actor.get("role"):
@@ -2375,8 +2382,11 @@ def _authenticate_ui():
         st.session_state.pop("auth-user", None)
         st.session_state.pop("vault-key", None)
     st.title("Trading Agent Lab")
-    st.caption("Laboratório local em simulação · entre para abrir seu workspace.")
+    st.caption("Portal de pesquisa em simulação · entre para abrir seu workspace.")
     first = store.identity_user_count() == 0
+    if first and os.environ.get("TRADING_LAB_ONLINE_MODE") == "1":
+        st.error("Acesso principal ainda não configurado. O administrador deve criá-lo no console do servidor.")
+        return None
     with st.form("workspace-login"):
         username = st.text_input("Usuário", max_chars=32)
         password = st.text_input("Senha", type="password")
@@ -2392,6 +2402,7 @@ def _authenticate_ui():
                 result = auth_service.login(username, password)
             st.session_state["auth-user"] = {key: result[key] for key in ("id", "username", "role")}
             st.session_state["vault-key"] = result["vault_key"]
+            st.session_state["auth-at"] = time.time()
             st.rerun()
         except (ValueError, PermissionError) as exc:
             st.error(str(exc))

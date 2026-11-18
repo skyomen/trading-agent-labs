@@ -1,6 +1,7 @@
 """Local, source-preserving PDF indexing for agent context."""
 
 import hashlib
+import os
 import re
 from pathlib import Path
 
@@ -9,7 +10,7 @@ from pypdf import PdfReader
 from database import store
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-REFERENCE_ROOT = PROJECT_ROOT / "reference_docs"
+REFERENCE_ROOT = Path(os.environ.get("TRADING_LAB_REFERENCE_DIR", str(PROJECT_ROOT / "reference_docs")))
 CHUNK_SIZE = 1400
 CHUNK_OVERLAP = 180
 

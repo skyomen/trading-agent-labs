@@ -1770,6 +1770,10 @@ Necessário:
 
 A migração de SQLite para PostgreSQL deve ocorrer somente quando a concorrência/escala justificar.
 
+### Preparação em 17/11/2026
+
+`docs/plans/entrega-14-portal-online.md` detalha a etapa. O pacote Docker/Caddy preserva processo e dados persistentes; `render.yaml` oferece alternativa gerenciada com subdomínio HTTPS e disco pago. O modo online desativa cadastro público do proprietário e limita sessão a oito horas. Backup cifrado e restauração isolada têm prova local. Publicação, URL e aceite online dependem de hospedagem autorizada e decisão sobre transferência de dados locais. A Entrega 14 permanece aberta; as Entregas 15 e 16 não foram iniciadas.
+
 ---
 
 # 57. ENTREGA 15 — OBSERVABILIDADE

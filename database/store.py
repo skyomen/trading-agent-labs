@@ -6,7 +6,7 @@ import re
 import secrets
 from contextvars import ContextVar
 from decimal import Decimal
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -59,6 +59,18 @@ def _special_connect(path):
         raise
     finally:
         conn.close()
+
+
+def backup_sqlite_file(source_path, target_path):
+    """Create a consistent SQLite snapshot without copying WAL files directly."""
+    source_path, target_path = Path(source_path), Path(target_path)
+    if not source_path.is_file() or target_path.exists():
+        raise ValueError("Origem indisponível ou destino de backup já existe.")
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(source_path)) as source, closing(sqlite3.connect(target_path)) as target:
+        source.backup(target, pages=1000, sleep=0.05)
+        if target.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+            raise ValueError("Falha na integridade do snapshot SQLite.")
 
 
 def initialize_identity():

@@ -1,6 +1,7 @@
 """Local multi-user isolation, credential vault and global-knowledge gates."""
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -140,6 +141,25 @@ class MultiuserTests(unittest.TestCase):
             self.assertFalse(app.exception, [item.message for item in app.exception])
             self.assertEqual(len(app.get("iframe")), 1)
             self.assertIn("historico-preservado", app.get("iframe")[0].proto.srcdoc)
+
+    def test_online_mode_never_offers_public_owner_registration(self):
+        with patch.object(store, "IDENTITY_DB_PATH", Path(self.tmp.name) / "online_identity.db"), \
+             patch.dict("os.environ", {"TRADING_LAB_ONLINE_MODE": "1"}):
+            app = AppTest.from_file(str(APP_PATH)).run()
+            self.assertFalse(app.exception)
+            self.assertEqual(len(app.get("iframe")), 0)
+            self.assertFalse(any(button.label == "Criar acesso principal" for button in app.button))
+            self.assertEqual(store.identity_user_count(), 0)
+
+    def test_online_session_expires_after_eight_hours(self):
+        with patch.dict("os.environ", {"TRADING_LAB_ONLINE_MODE": "1"}):
+            app = AppTest.from_file(str(APP_PATH))
+            app.session_state["auth-user"] = {key: self.owner[key] for key in ("id", "username", "role")}
+            app.session_state["vault-key"] = self.owner["vault_key"]
+            app.session_state["auth-at"] = time.time() - 9 * 3600
+            app.run()
+            self.assertFalse(app.exception)
+            self.assertEqual(len(app.get("iframe")), 0)
 
 
 if __name__ == "__main__":

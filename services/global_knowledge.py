@@ -11,7 +11,7 @@ def _current(item):
     if relative.parts[:2] != ("reference_docs", "shared") and relative.parts[:2] != (
             "reference_docs", "agents"):
         return False
-    source = (documents.PROJECT_ROOT / relative).resolve()
+    source = (documents.REFERENCE_ROOT / relative.relative_to("reference_docs")).resolve()
     if not source.is_relative_to(documents.REFERENCE_ROOT.resolve()) or not source.is_file():
         return False
     return documents._digest(source) == item["source_sha256"]

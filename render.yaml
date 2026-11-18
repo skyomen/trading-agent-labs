@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: trading-agent-lab
+    runtime: docker
+    region: virginia
+    plan: 1c-2g
+    numInstances: 1
+    autoDeployTrigger: off
+    healthCheckPath: /_stcore/health
+    maintenanceMode:
+      enabled: true
+    envVars:
+      - key: TRADING_LAB_DATA_DIR
+        value: /data
+      - key: TRADING_LAB_REFERENCE_DIR
+        value: /data/reference_docs
+      - key: TRADING_LAB_ONLINE_MODE
+        value: "1"
+    disk:
+      name: lab-data
+      mountPath: /data
+      sizeGB: 10

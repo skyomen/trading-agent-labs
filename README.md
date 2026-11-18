@@ -26,6 +26,9 @@ Depois de entrar, escolha **Portal** para a sala visual ou **Laboratório** para
 
 Guarde sua senha: ainda não há recuperação de conta ou troca de senha pela interface. O cofre de credenciais depende dela. Este login é para uso **local**; o portal online é uma entrega futura.
 
+Há um [pacote de preparação para servidor com HTTPS](docs/deploy/self-host.md). Ele ainda não está publicado: exige servidor, domínio e decisão sobre quais dados locais serão transferidos.
+Também há uma [alternativa gerenciada na Render](docs/deploy/render.md), com subdomínio HTTPS e disco pago. Nenhuma conta ou cobrança foi criada.
+
 ## Fluxos disponíveis
 
 - **Agentes e documentos:** tarefas de IA só ocorrem ao clicar para executá-las; incluir trechos de PDF em contexto externo exige autorização explícita por tarefa.
