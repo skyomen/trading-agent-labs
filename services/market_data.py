@@ -136,10 +136,23 @@ def import_public_stock_history(symbol):
     })
 
 
+def _heartbeat(symbol, state, details=""):
+    """Stamp collector liveness next to the feed update it already performs.
+
+    Observability only: a failure here must never interrupt collection, so it is logged
+    and swallowed instead of being mistaken for a disconnect.
+    """
+    try:
+        store.record_heartbeat(f"collector:{symbol}", state, details)
+    except Exception as exc:
+        logging.debug("Heartbeat do coletor %s não registrado: %s", symbol, exc)
+
+
 def _backfill(symbol):
     bars = fetch_closed_klines(symbol, limit=1000)
     store.upsert_market_bars(PROVIDER, symbol, "1m", bars)
     store.update_market_feed(PROVIDER, symbol, "1m", "connected", bars[-1]["timestamp"])
+    _heartbeat(symbol, "connected", "backfill concluído")
 
 
 def collect_symbol_forever(symbol, stop_event=None):
@@ -154,6 +167,7 @@ def collect_symbol_forever(symbol, stop_event=None):
             _backfill(symbol)
             with connect(STREAM.format(symbol.lower()), open_timeout=15, close_timeout=5) as socket:
                 store.update_market_feed(PROVIDER, symbol, "1m", "connected")
+                _heartbeat(symbol, "connected", "stream aberto")
                 while not stop_event.is_set():
                     message = json.loads(socket.recv(timeout=90))
                     candle = message.get("k", {})
@@ -162,11 +176,14 @@ def collect_symbol_forever(symbol, stop_event=None):
                     bar = _bar([candle["t"], candle["o"], candle["h"], candle["l"], candle["c"], candle["v"]])
                     store.upsert_market_bar(PROVIDER, symbol, "1m", bar)
                     store.update_market_feed(PROVIDER, symbol, "1m", "connected", bar["timestamp"])
+                    _heartbeat(symbol, "connected", f"candle fechado {bar['timestamp']}")
         except Exception as exc:
             logging.warning("Feed %s desconectado: %s", symbol, exc)
             store.update_market_feed(PROVIDER, symbol, "1m", "disconnected", error=str(exc)[:500])
+            _heartbeat(symbol, "disconnected", str(exc)[:250])
             stop_event.wait(10)
     store.update_market_feed(PROVIDER, symbol, "1m", "stopped")
+    _heartbeat(symbol, "stopped", "coletor encerrado")
 
 
 def main():

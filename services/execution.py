@@ -88,6 +88,9 @@ def confirm_open(run_id, quantity):
         raise ValueError("Trilha sem plano de execução congelado; confirmação recusada.")
 
     source = f"pipeline #{run_id} · {run['setup_id']} · barra {run['signal_bar_utc']} UTC"
+    kill_switch = store.get_kill_switch()
+    if kill_switch["enabled"]:
+        raise ValueError(f"Abertura de novas posições bloqueada: {kill_switch['reason']}")
     operation_id = store.open_paper_operation(
         run["symbol"], side, float(quantity), float(entry_price), source,
         pipeline_run_id=run_id, fees=0.0,

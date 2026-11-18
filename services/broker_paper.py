@@ -106,6 +106,9 @@ def submit_entry(run_id, quantity, limit_price, confirmed=False, adapter=None):
     if not check["eligible"]:
         raise ValueError("Preço limite diverge mais de 1% da compra Testnet atual.")
     client_id = f"tal{run_id}entry"
+    kill_switch = store.get_kill_switch()
+    if kill_switch["enabled"]:
+        raise ValueError(f"Abertura de novas posições bloqueada: {kill_switch['reason']}")
     order_id = store.reserve_broker_entry(run_id, PROVIDER, client_id, run["symbol"],
                                           check["quantity"], check["limit_price"])
     return _send_reserved(order_id, broker)

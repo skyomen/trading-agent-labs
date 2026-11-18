@@ -338,6 +338,23 @@ class ConfirmOpenTests(PipelineTestBase):
         with self.assertRaises(ValueError):
             execution.discard(run_id)
 
+    def test_confirm_open_refuses_when_kill_switch_is_active_and_writes_nothing(self):
+        strategy = self.approved_strategy()
+        run_id = self.seed_pending_run(strategy["id"])
+        store.set_kill_switch(True, "incidente em investigação", "ana")
+        with self.assertRaisesRegex(ValueError, "[Bb]loquead"):
+            execution.confirm_open(run_id, 0.5)
+        self.assertEqual(store.list_paper_operations(), [])
+        self.assertEqual(store.get_pipeline_run(run_id)["status"], "aguardando_quantidade")
+
+    def test_discard_still_works_while_kill_switch_is_active(self):
+        strategy = self.approved_strategy()
+        run_id = self.seed_pending_run(strategy["id"])
+        store.set_kill_switch(True, "incidente em investigação", "ana")
+        execution.discard(run_id)
+        self.assertEqual(store.get_pipeline_run(run_id)["status"], "descartado_pelo_usuario")
+        self.assertEqual(store.list_paper_operations(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

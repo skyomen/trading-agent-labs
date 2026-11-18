@@ -518,6 +518,13 @@ def initialize():
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        conn.execute("""CREATE TABLE IF NOT EXISTS operational_controls (
+            key TEXT PRIMARY KEY, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+            reason TEXT NOT NULL, actor TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS service_heartbeats (
+            component TEXT PRIMARY KEY, state TEXT NOT NULL,
+            details TEXT NOT NULL DEFAULT '', last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
         conn.execute("PRAGMA foreign_keys = ON")
         for name, status, responsibility in AGENTS:
             conn.execute(
@@ -552,6 +559,50 @@ def initialize():
                     "INSERT INTO events(agent,level,message) VALUES(?,?,?)",
                     ("Trading Lab", "NOTICE", f"Responsabilidade atualizada com o estado validado: {agent_name}"),
                 )
+
+def get_kill_switch():
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM operational_controls WHERE key='new_entries'").fetchone()
+        return dict(row) if row else {"key": "new_entries", "enabled": 0,
+                                      "reason": "", "actor": "", "updated_at": None}
+
+
+def set_kill_switch(enabled, reason, actor):
+    if not actor or (enabled and not reason.strip()):
+        raise ValueError("Informe responsável e motivo para ativar o bloqueio.")
+    with connect() as conn:
+        conn.execute("""INSERT INTO operational_controls(key,enabled,reason,actor,updated_at)
+            VALUES('new_entries',?,?,?,CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET enabled=excluded.enabled,
+            reason=excluded.reason,actor=excluded.actor,updated_at=CURRENT_TIMESTAMP""",
+            (int(bool(enabled)), reason.strip()[:300], actor[:100]))
+        conn.execute("INSERT INTO events(agent,level,message) VALUES(?,?,?)",
+                     ("Trading Lab", "NOTICE", "Bloqueio de novas entradas " +
+                      ("ativado" if enabled else "desativado") + f" por {actor[:100]}: {reason.strip()[:300]}"))
+    return get_kill_switch()
+
+
+def record_heartbeat(component, state, details=""):
+    if component not in {"app", "collector:BTCUSDT", "collector:ETHUSDT"}:
+        raise ValueError("Componente desconhecido.")
+    with connect() as conn:
+        conn.execute("""INSERT INTO service_heartbeats(component,state,details,last_seen_at)
+            VALUES(?,?,?,CURRENT_TIMESTAMP)
+            ON CONFLICT(component) DO UPDATE SET state=excluded.state,
+            details=excluded.details,last_seen_at=CURRENT_TIMESTAMP""",
+            (component, state[:50], details[:250]))
+
+
+def list_heartbeats():
+    with connect() as conn:
+        return [dict(row) for row in conn.execute(
+            "SELECT * FROM service_heartbeats ORDER BY component").fetchall()]
+
+
+def quick_check():
+    with connect() as conn:
+        return conn.execute("PRAGMA quick_check").fetchone()[0]
+
 
 def get_agents():
     with connect() as conn:

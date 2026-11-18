@@ -26,6 +26,7 @@ from services import datasets as dataset_service
 from services import execution as execution_service
 from services import broker_paper as broker_paper_service
 from services import market_data
+from services import observability
 from services import pipeline as pipeline_service
 from services import paper_learning as paper_learning_service
 from services import trade_management as trade_management_service
@@ -671,15 +672,11 @@ def market_overview():
     now = datetime.now(timezone.utc)
     feeds = []
     for feed in store.list_market_feeds():
-        checked = datetime.fromisoformat(feed["checked_at"].replace("Z", "+00:00")
-                                        if "T" in feed["checked_at"] else feed["checked_at"] + "+00:00")
-        last_at = datetime.fromisoformat(feed["last_bar_at"].replace("Z", "+00:00")) if feed["last_bar_at"] else None
-        current = (feed["status"] == "connected" and last_at is not None
-                   and (now - checked).total_seconds() < 120
-                   and (now - last_at).total_seconds() < 180)
+        freshness = observability.feed_freshness(feed, now)
         bars = store.get_market_bars(feed["provider"], feed["symbol"], feed["timeframe"], limit=1)
         feeds.append({"provider": feed["provider"], "symbol": feed["symbol"],
-                      "timeframe": feed["timeframe"], "state": "atual" if current else "atrasado ou desconectado",
+                      "timeframe": feed["timeframe"],
+                      "state": "atual" if freshness["current"] else "atrasado ou desconectado",
                       "last_bar_at": feed["last_bar_at"],
                       "last_close": bars[-1]["close"] if bars else None})
     datasets = []
@@ -1296,6 +1293,109 @@ def page_controls():
     st.warning("A sala de execução não prepara ordens. Compatibilidade e simulação do XP Trader 5.0.4.34 ainda precisam de validação técnica independente.")
     st.markdown("### Conexões e biblioteca local")
     page_connections()
+
+    st.markdown("### Observabilidade local")
+    snapshot = observability.get_health_snapshot()
+
+    integrity = snapshot["integrity"]
+    st.markdown(
+        f'<div class="tal-connection"><strong>Integridade do banco (quick_check)</strong>'
+        f'<span class="tal-state {"safe" if integrity["ok"] else "warn"}">{esc(integrity["result"])}</span></div>',
+        unsafe_allow_html=True)
+
+    st.markdown("#### Atividade dos componentes")
+    for item in snapshot["heartbeats"]:
+        age_label = f"há {int(item['age_seconds'])}s" if item["age_seconds"] is not None else "sem registro"
+        st.markdown(
+            f'<div class="tal-connection"><div><strong>{esc(item["component"])}</strong>'
+            f'<small>{esc(item["state"] or "sem estado")} · {esc(age_label)}</small></div>'
+            f'<span class="tal-state {"safe" if item["status"] == "ativo" else "warn"}">{esc(item["status"])}</span></div>',
+            unsafe_allow_html=True)
+
+    st.markdown("#### Feeds desatualizados")
+    stale_feeds = [feed for feed in snapshot["feeds"] if not feed["current"]]
+    if stale_feeds:
+        for feed in stale_feeds:
+            st.markdown(
+                f'<div class="tal-connection"><div><strong>{esc(feed["symbol"])} · {esc(feed["timeframe"])}</strong>'
+                f'<small>status {esc(feed["status"])} · última barra {esc(feed["last_bar_at"] or "nenhuma")}</small></div>'
+                f'<span class="tal-state warn">atrasado</span></div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="tal-connection"><strong>Feeds de mercado</strong>'
+                     '<span class="tal-state safe">todos atuais</span></div>', unsafe_allow_html=True)
+
+    st.markdown("#### Ordens Testnet em estado desconhecido")
+    if snapshot["uncertain_orders"]:
+        for order in snapshot["uncertain_orders"]:
+            st.markdown(
+                f'<div class="tal-connection"><div><strong>#{order["id"]} · {esc(order["symbol"])} {esc(order["side"])}</strong>'
+                f'<small>client_order_id {esc(order["client_order_id"])} · {esc(order["error"] or "sem detalhe")}</small></div>'
+                f'<span class="tal-state warn">unknown</span></div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="tal-connection"><strong>Ordens Testnet</strong>'
+                     '<span class="tal-state safe">nenhuma em estado desconhecido</span></div>', unsafe_allow_html=True)
+
+    st.markdown(
+        f'<div class="tal-connection"><strong>Operações paper abertas aguardando condução</strong>'
+        f'<span class="tal-state">{snapshot["open_operations_count"]}</span></div>', unsafe_allow_html=True)
+    if snapshot["open_operations"]:
+        with st.expander(f"{snapshot['open_operations_count']} operação(ões) paper aberta(s)"):
+            for operation in snapshot["open_operations"]:
+                st.write(f"#{operation['id']} · {operation['symbol']} {operation['side']} · "
+                         f"quantidade {operation['quantity']} · entrada {operation['entry_price']} · "
+                         f"desde {operation['created_at']}")
+
+    st.markdown("#### Alertas")
+    if snapshot["alerts"]:
+        for alert in snapshot["alerts"]:
+            message = f"[{alert['kind']}] {alert['message']}"
+            if alert["severity"] == observability.SEVERITY_CRITICAL:
+                st.error(message)
+            elif alert["severity"] == observability.SEVERITY_WARNING:
+                st.warning(message)
+            else:
+                st.info(message)
+    else:
+        st.success("Nenhum alerta no momento.")
+
+    st.markdown("### Bloqueio de novas entradas")
+    kill_switch = snapshot["kill_switch"]
+    st.markdown(
+        f'<div class="tal-connection"><div><strong>{"Bloqueado" if kill_switch["enabled"] else "Liberado"}</strong>'
+        f'<small>{esc(kill_switch["reason"] or "sem motivo registrado")}</small></div>'
+        f'<span class="tal-state {"warn" if kill_switch["enabled"] else "safe"}">'
+        f'{esc(kill_switch["actor"] or "—")} · {esc(kill_switch["updated_at"] or "nunca alterado")}</span></div>',
+        unsafe_allow_html=True)
+    st.caption("Este bloqueio só impede abrir uma posição NOVA. Ele não afeta consulta, cancelamento, "
+               "descarte ou saída de posição já aberta.")
+
+    actor = st.session_state.get("auth-user")
+    actor_name = actor["username"] if actor else ""
+
+    st.markdown("#### Ativar bloqueio")
+    block_reason = st.text_input("Motivo do bloqueio (obrigatório)", key="kill-switch-reason-on")
+    block_confirm = st.checkbox("Confirmo a ativação do bloqueio de novas entradas", key="kill-switch-confirm-on")
+    if st.button("Ativar bloqueio", key="kill-switch-activate", type="primary", disabled=not block_confirm):
+        if not block_reason.strip():
+            st.error("Informe o motivo antes de ativar o bloqueio.")
+        else:
+            try:
+                store.set_kill_switch(True, block_reason, actor_name)
+                st.success("Bloqueio de novas entradas ativado.")
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
+
+    st.markdown("#### Desativar bloqueio")
+    unblock_reason = st.text_input("Motivo da desativação (opcional)", key="kill-switch-reason-off")
+    unblock_confirm = st.checkbox("Confirmo a desativação do bloqueio de novas entradas", key="kill-switch-confirm-off")
+    if st.button("Desativar bloqueio", key="kill-switch-deactivate", disabled=not unblock_confirm):
+        try:
+            store.set_kill_switch(False, unblock_reason, actor_name)
+            st.success("Bloqueio de novas entradas desativado.")
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
 
 
 def page_capital():
@@ -2194,6 +2294,10 @@ def page_pipeline():
 
 
 def local_lab_main():
+    try:
+        store.record_heartbeat("app", "running")
+    except Exception:
+        pass
     agents = store.get_agents()
     counts = store.counts()
     with st.container(key="tal-header"):

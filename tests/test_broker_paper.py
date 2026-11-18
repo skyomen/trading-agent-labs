@@ -178,6 +178,28 @@ class BrokerPaperTests(unittest.TestCase):
                                              hashlib.sha256).hexdigest())
         self.assertNotIn("test-secret", request.full_url)
 
+    def test_submit_entry_refuses_when_kill_switch_is_active_and_reserves_nothing(self):
+        store.set_kill_switch(True, "incidente em investigação", "ana")
+        with self.assertRaisesRegex(ValueError, "[Bb]loquead"):
+            broker_paper.submit_entry(self.run_id, 1, 100, confirmed=True, adapter=self.fake)
+        self.assertEqual(self.fake.sent, [])
+        self.assertIsNone(store.get_broker_entry_for_run(self.run_id))
+
+    def test_cancel_submit_exit_and_reconcile_still_work_while_kill_switch_is_active(self):
+        order = broker_paper.submit_entry(self.run_id, 1, 100, confirmed=True, adapter=self.fake)
+        client_id = order["client_order_id"]
+        self.fake.responses[client_id] = self.fake._response(client_id, "PARTIALLY_FILLED", "0.6")
+
+        store.set_kill_switch(True, "incidente em investigação", "ana")
+
+        reconciled = broker_paper.reconcile(order["id"], self.fake)
+        self.assertEqual(reconciled["executed_qty"], 0.6)
+        canceled = broker_paper.cancel(order["id"], self.fake)
+        self.assertEqual(canceled["state"], "CANCELED")
+        sold = broker_paper.submit_exit(order["id"], 0.6, 99.9,
+                                        confirmed=True, adapter=self.fake)
+        self.assertEqual(sold["side"], "SELL")
+
     def test_adapter_validates_exchange_filters(self):
         def opener(request, timeout):
             data = {"symbols": [{"symbol": "BTCUSDT", "status": "TRADING",
