@@ -1,12 +1,21 @@
 import sqlite3
 import json
 import math
+import os
+import re
+import secrets
+from contextvars import ContextVar
 from decimal import Decimal
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent / "trading.db"
+DB_PATH = Path(os.environ.get("TRADING_LAB_DATA_DIR", str(Path(__file__).resolve().parent))) / "trading.db"
+IDENTITY_DB_PATH = DB_PATH.with_name("identity.db")
+GLOBAL_DB_PATH = DB_PATH.with_name("global_knowledge.db")
+WORKSPACES_DIR = DB_PATH.parent / "workspaces"
+_workspace_path = ContextVar("workspace_path", default=None)
+_active_user = ContextVar("active_user", default=None)
 
 AGENTS = [
     ("Research Agent", "Aguardando documentos", "Extrai conceitos e setups dos PDFs."),
@@ -19,7 +28,7 @@ AGENTS = [
 
 @contextmanager
 def connect():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(_workspace_path.get() or DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     try:
@@ -30,6 +39,141 @@ def connect():
         raise
     finally:
         conn.close()
+
+
+def active_user_id():
+    return _active_user.get()
+
+
+@contextmanager
+def _special_connect(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def initialize_identity():
+    with _special_connect(IDENTITY_DB_PATH) as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            role TEXT NOT NULL CHECK(role IN ('owner','user')),
+            password_hash TEXT NOT NULL, vault_salt TEXT NOT NULL,
+            failed_attempts INTEGER NOT NULL DEFAULT 0, locked_until TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS one_owner ON users(role) WHERE role='owner'")
+
+
+def identity_user_count():
+    initialize_identity()
+    with _special_connect(IDENTITY_DB_PATH) as conn:
+        return conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+
+
+def get_identity_user(username=None, user_id=None):
+    initialize_identity()
+    with _special_connect(IDENTITY_DB_PATH) as conn:
+        if username is not None:
+            row = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+        else:
+            row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def list_identity_users():
+    initialize_identity()
+    with _special_connect(IDENTITY_DB_PATH) as conn:
+        return [dict(row) for row in conn.execute(
+            "SELECT id,username,role,created_at FROM users ORDER BY created_at,id").fetchall()]
+
+
+def create_identity_user(username, password_hash, vault_salt, role="user"):
+    initialize_identity()
+    username = username.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{3,32}", username):
+        raise ValueError("Usuário deve ter 3 a 32 letras, números, ponto, hífen ou sublinhado.")
+    if role not in {"owner", "user"}:
+        raise ValueError("Papel de usuário inválido.")
+    user_id = secrets.token_hex(16)
+    with _special_connect(IDENTITY_DB_PATH) as conn:
+        if role == "owner" and conn.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+            raise ValueError("Proprietário já configurado.")
+        if role == "user" and not conn.execute("SELECT 1 FROM users WHERE role='owner'").fetchone():
+            raise ValueError("Configure o proprietário primeiro.")
+        try:
+            conn.execute("INSERT INTO users(id,username,role,password_hash,vault_salt) VALUES(?,?,?,?,?)",
+                         (user_id, username, role, password_hash, vault_salt))
+        except sqlite3.IntegrityError:
+            raise ValueError("Nome de usuário indisponível.") from None
+    if role == "user":
+        with user_workspace(user_id):
+            initialize()
+    return user_id
+
+
+def record_login_attempt(user_id, success):
+    with _special_connect(IDENTITY_DB_PATH) as conn:
+        if success:
+            conn.execute("UPDATE users SET failed_attempts=0,locked_until=NULL WHERE id=?", (user_id,))
+        else:
+            conn.execute("""UPDATE users SET failed_attempts=failed_attempts+1,
+                locked_until=CASE WHEN failed_attempts+1>=5 THEN datetime('now','+5 minutes')
+                                  ELSE locked_until END WHERE id=?""", (user_id,))
+
+
+@contextmanager
+def user_workspace(user_id):
+    user = get_identity_user(user_id=user_id)
+    if not user:
+        raise ValueError("Usuário desconhecido.")
+    if user["role"] == "owner":
+        path = DB_PATH
+    else:
+        WORKSPACES_DIR.mkdir(parents=True, exist_ok=True)
+        path = WORKSPACES_DIR / f"{user['id']}.db"
+    token_path = _workspace_path.set(path)
+    token_user = _active_user.set(user["id"])
+    try:
+        yield user
+    finally:
+        _active_user.reset(token_user)
+        _workspace_path.reset(token_path)
+
+
+def initialize_global_knowledge():
+    with _special_connect(GLOBAL_DB_PATH) as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS global_knowledge (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL, title TEXT NOT NULL, source_path TEXT NOT NULL,
+            source_sha256 TEXT NOT NULL, page_number INTEGER NOT NULL,
+            evidence TEXT NOT NULL, promoted_by TEXT NOT NULL,
+            promoted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(kind,title,source_path,source_sha256,page_number))""")
+
+
+def promote_global_knowledge(item, promoted_by):
+    initialize_global_knowledge()
+    with _special_connect(GLOBAL_DB_PATH) as conn:
+        conn.execute("""INSERT OR IGNORE INTO global_knowledge
+            (kind,title,source_path,source_sha256,page_number,evidence,promoted_by)
+            VALUES(?,?,?,?,?,?,?)""",
+            (item["kind"], item["title"], item["source_path"], item["source_sha256"],
+             item["page_number"], item["evidence"], promoted_by))
+
+
+def list_global_knowledge():
+    initialize_global_knowledge()
+    with _special_connect(GLOBAL_DB_PATH) as conn:
+        return [dict(row) for row in conn.execute(
+            "SELECT * FROM global_knowledge ORDER BY id DESC").fetchall()]
 
 def initialize():
     with connect() as conn:
@@ -464,17 +608,19 @@ def get_document_context(agent, limit=12):
         "Risk Manager": "risk-manager", "Execution Agent": "execution-agent",
     }
     slug = slugs.get(agent, "")
+    private_pattern = (f"reference_docs/workspaces/{active_user_id()}/%"
+                       if active_user_id() else "reference_docs/workspaces/none/%")
     with connect() as conn:
         rows = conn.execute("""
             SELECT d.relative_path,d.filename,c.page_number,c.content
             FROM document_chunks c JOIN documents d ON d.id=c.document_id
             WHERE d.status='indexed'
               AND (d.relative_path LIKE 'reference_docs/shared/%'
-                   OR d.relative_path LIKE ?)
+                   OR d.relative_path LIKE ? OR d.relative_path LIKE ?)
             ORDER BY CASE WHEN d.relative_path LIKE 'reference_docs/shared/%' THEN 1 ELSE 0 END,
                      d.relative_path,c.page_number,c.chunk_index
             LIMIT ?
-        """, (f"reference_docs/agents/{slug}/%", limit)).fetchall()
+        """, (f"reference_docs/agents/{slug}/%", private_pattern, limit)).fetchall()
         return [dict(row) for row in rows]
 
 

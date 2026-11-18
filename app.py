@@ -4,19 +4,21 @@ from __future__ import annotations
 
 import html
 import json
-import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 import streamlit as st
 
-from services.config import load_local_env
+from services.config import load_local_env, credential_context, current_credentials
 
 load_local_env()
 
 from database import store
 from services import documents
+from services import auth as auth_service
+from services import credential_vault
+from services import global_knowledge
 from services import knowledge as knowledge_service
 from services import datasets as dataset_service
 from services import execution as execution_service
@@ -447,8 +449,6 @@ function inicializarLocal(){
 
 
 st.set_page_config(page_title="Trading Agent Lab", layout="wide", initial_sidebar_state="collapsed")
-store.initialize()
-knowledge_service.refresh_research_status()
 
 AGENT_ICONS = {
     "Research Agent": "book", "Market Analyst": "chart", "Fundamental Analyst": "news",
@@ -688,7 +688,7 @@ def market_overview():
                          "row_count": item["row_count"], "end_utc": meta.get("end_utc"),
                          "sha256": item["sha256"], "market": meta.get("market")})
     return {"feeds": feeds, "datasets": datasets,
-            "alpaca_configured": bool(os.environ.get("ALPACA_API_KEY") and os.environ.get("ALPACA_API_SECRET"))}
+            "alpaca_configured": bool(current_credentials().get("ALPACA_API_KEY") and current_credentials().get("ALPACA_API_SECRET"))}
 
 
 def topbar(agents, counts):
@@ -1065,6 +1065,14 @@ def render_agent_detail(agent):
                                 store.review_knowledge_item(item["id"], False)
                                 store.add_event("Usuário", "INFO", f"Conhecimento #{item['id']} rejeitado para Research Agent")
                                 st.rerun()
+                    elif item["status"] == "approved" and st.session_state.get("auth-user", {}).get("role") == "owner":
+                        if st.button("Promover à biblioteca global", key=f"global-knowledge-{item['id']}"):
+                            try:
+                                global_knowledge.promote(item["id"], st.session_state["auth-user"])
+                                st.success("Conhecimento publicado na biblioteca global.")
+                                st.rerun()
+                            except ValueError as exc:
+                                st.error(str(exc))
         docs, stale = documents.agent_context(agent["name"], limit=100)
         if stale:
             st.warning("Há arquivos sem índice atual, ainda não processados ou com falha. Eles não entram no contexto do agente: " + ", ".join(stale))
@@ -1325,6 +1333,20 @@ def page_connections():
     library = documents.library_status()
     overview = market_overview()
     st.markdown("### Biblioteca de PDFs")
+    if store.active_user_id():
+        with st.form("private-pdf-upload"):
+            upload = st.file_uploader("Adicionar PDF privado ao meu workspace", type=["pdf"])
+            upload_clicked = st.form_submit_button("Salvar PDF privado")
+        if upload_clicked:
+            if upload is None:
+                st.error("Selecione um PDF.")
+            else:
+                try:
+                    path = documents.save_private_pdf(upload.name, upload.getvalue())
+                    st.success(f"PDF salvo no seu workspace: {path.name}. Indexe para usar no contexto.")
+                    st.rerun()
+                except ValueError as exc:
+                    st.error(str(exc))
     st.markdown(f'<div class="tal-connection"><div><strong>{len(library)} arquivos encontrados</strong><small>Originais lidos somente localmente; contexto para IA exige autorização explícita por tarefa.</small></div><span class="tal-state">{sum(1 for item in library if item["status"] == "indexed")} atualizados</span></div>', unsafe_allow_html=True)
     if library:
         if st.button("Indexar PDFs locais", type="primary"):
@@ -1348,7 +1370,13 @@ def page_connections():
         st.success(f"Conector compatível configurado · modelo {esc(config['model'])} · chave {'presente' if config['api_key_present'] else 'não necessária para serviço local'}.")
     else:
         st.warning("Provedor não configurado. Nenhuma chamada de IA será feita automaticamente.")
-    st.code("TRADING_LAB_LLM_BASE_URL\nTRADING_LAB_LLM_MODEL\nTRADING_LAB_LLM_API_KEY (opcional para modelo local)", language="text")
+    st.caption("Configure URL, modelo e chave na seção 'Minhas credenciais' da barra lateral.")
+    if store.active_user_id():
+        shared_items = global_knowledge.list_fresh()
+        st.markdown("### Biblioteca global aprovada")
+        st.caption(f"{len(shared_items)} item(ns) com fonte atual, compartilhados após revisão do proprietário.")
+        for item in shared_items[:30]:
+            st.write(f"{item['title']} · {item['source_path']} · p. {item['page_number']}")
     st.caption("A chamada só ocorre quando você inicia uma tarefa. Para incluir PDFs, o formulário exige autorização explícita de envio ao provedor configurado.")
     st.markdown("### Dados e plataforma")
     source_rows = [
@@ -1529,8 +1557,8 @@ def page_backtests(counts):
             except Exception as exc:
                 st.error(f"Falha na importação pública: {exc}")
         st.caption("AAPL e MSFT são candidatos. A fonte IEX cobre uma bolsa, não o mercado consolidado. A importação exige credenciais locais de dados da Alpaca; nenhuma chave é armazenada no SQLite ou digitada nesta página.")
-        if not os.environ.get("ALPACA_API_KEY") or not os.environ.get("ALPACA_API_SECRET"):
-            st.info("Fonte não configurada. Defina ALPACA_API_KEY e ALPACA_API_SECRET no ambiente local para habilitar a importação.")
+        if not current_credentials().get("ALPACA_API_KEY") or not current_credentials().get("ALPACA_API_SECRET"):
+            st.info("Fonte não configurada. Cadastre suas credenciais Alpaca IEX na barra lateral.")
         else:
             stock_symbol = st.selectbox("Ação", market_data.STOCKS)
             from datetime import datetime, timedelta, timezone
@@ -2337,11 +2365,116 @@ def render_reference():
     )
 
 
+def _authenticate_ui():
+    actor = st.session_state.get("auth-user")
+    key = st.session_state.get("vault-key")
+    if actor and isinstance(key, bytes):
+        persisted = store.get_identity_user(user_id=actor.get("id"))
+        if persisted and persisted["username"] == actor.get("username") and persisted["role"] == actor.get("role"):
+            return actor
+        st.session_state.pop("auth-user", None)
+        st.session_state.pop("vault-key", None)
+    st.title("Trading Agent Lab")
+    st.caption("Laboratório local em simulação · entre para abrir seu workspace.")
+    first = store.identity_user_count() == 0
+    with st.form("workspace-login"):
+        username = st.text_input("Usuário", max_chars=32)
+        password = st.text_input("Senha", type="password")
+        confirmation = st.text_input("Confirme a senha", type="password") if first else None
+        submitted = st.form_submit_button("Criar acesso principal" if first else "Entrar", type="primary")
+    if submitted:
+        try:
+            if first:
+                if password != confirmation:
+                    raise ValueError("As senhas não coincidem.")
+                result = auth_service.create_account(username, password, role="owner")
+            else:
+                result = auth_service.login(username, password)
+            st.session_state["auth-user"] = {key: result[key] for key in ("id", "username", "role")}
+            st.session_state["vault-key"] = result["vault_key"]
+            st.rerun()
+        except (ValueError, PermissionError) as exc:
+            st.error(str(exc))
+    return None
+
+
+def _workspace_sidebar(actor, credentials):
+    with st.sidebar:
+        st.write(f"**{actor['username']}** · {'proprietário' if actor['role'] == 'owner' else 'usuário'}")
+        if st.button("Sair", key="workspace-logout"):
+            st.session_state.clear()
+            st.rerun()
+        if actor["role"] == "owner":
+            with st.expander("Usuários"):
+                for user in store.list_identity_users():
+                    st.caption(f"{user['username']} · {user['role']}")
+                with st.form("create-workspace-user"):
+                    username = st.text_input("Novo usuário")
+                    password = st.text_input("Senha inicial", type="password")
+                    confirmation = st.text_input("Confirmar senha inicial", type="password")
+                    create = st.form_submit_button("Criar workspace")
+                if create:
+                    try:
+                        if password != confirmation:
+                            raise ValueError("As senhas não coincidem.")
+                        auth_service.create_account(username, password, actor=actor)
+                        st.success("Workspace criado com seis agentes e histórico próprio.")
+                        st.rerun()
+                    except (ValueError, PermissionError) as exc:
+                        st.error(str(exc))
+        with st.expander("Minhas credenciais"):
+            providers = {
+                "IA": ("TRADING_LAB_LLM_BASE_URL", "TRADING_LAB_LLM_MODEL", "TRADING_LAB_LLM_API_KEY"),
+                "Alpaca IEX": ("ALPACA_API_KEY", "ALPACA_API_SECRET"),
+                "Binance Spot Testnet": ("BINANCE_SPOT_TESTNET_API_KEY", "BINANCE_SPOT_TESTNET_API_SECRET"),
+            }
+            provider = st.selectbox("Serviço", list(providers), key="workspace-provider")
+            fields = providers[provider]
+            st.caption("Configurado: " + ("sim" if all(credentials.get(name) for name in fields[:2]) else "não"))
+            if st.session_state.pop("vault-clear-inputs", False):
+                for name in fields:
+                    st.session_state.pop(f"vault-input-{provider}-{name}", None)
+            with st.form(f"workspace-credentials-{provider}", clear_on_submit=True):
+                values = {}
+                for name in fields:
+                    label = name.replace("TRADING_LAB_", "").replace("BINANCE_SPOT_TESTNET_", "")
+                    values[name] = st.text_input(label, type="password" if "KEY" in name or "SECRET" in name else "default",
+                                                 key=f"vault-input-{provider}-{name}")
+                save = st.form_submit_button("Salvar campos preenchidos")
+            if save:
+                changes = {name: value for name, value in values.items() if value}
+                if not changes:
+                    st.warning("Preencha ao menos um campo.")
+                else:
+                    credential_vault.save_credentials(actor["id"], st.session_state["vault-key"], changes)
+                    st.success("Credenciais salvas no seu cofre local.")
+                    st.rerun()
+            if st.button("Remover configuração deste serviço", key=f"vault-delete-{provider}"):
+                credential_vault.save_credentials(actor["id"], st.session_state["vault-key"],
+                                                  {name: "" for name in fields})
+                st.session_state["vault-clear-inputs"] = True
+                st.rerun()
+
+
 def main():
-    if st.query_params.get("lab") == "1":
-        local_lab_main()
-    else:
-        render_reference()
+    actor = _authenticate_ui()
+    if actor is None:
+        return
+    with store.user_workspace(actor["id"]):
+        credentials = credential_vault.read_credentials(actor["id"],
+                                                        st.session_state["vault-key"])
+        with credential_context(credentials):
+            store.initialize()
+            knowledge_service.refresh_research_status()
+            _workspace_sidebar(actor, credentials)
+            default_mode = "Laboratório" if st.query_params.get("lab") == "1" else "Portal"
+            mode = st.radio("Área", ["Portal", "Laboratório"], horizontal=True,
+                            index=0 if default_mode == "Portal" else 1,
+                            key="workspace-mode")
+            if mode == "Laboratório":
+                local_lab_main()
+            else:
+                render_reference()
 
 
 if __name__ == "__main__":

@@ -1,101 +1,51 @@
 # Trading Agent Lab
 
-Portal local com a estrutura visual de `referencia.html`, em português brasileiro e alimentada pelos registros locais do SQLite. O modo de laboratório Streamlit anterior, com as telas de trabalho completas, continua disponível em `?lab=1`.
+Laboratório local de seis agentes para pesquisa intraday, documentos, estratégias, backtests e operações **simuladas**. O portal usa a estrutura visual de `referencia.html` e mostra somente dados persistidos. Nenhuma ordem real é preparada ou enviada.
 
-## Windows 11: instalação
+## Abrir o aplicativo
 
-Requisitos: Python 3.11 ou superior e Streamlit 1.49 ou superior (instalado pelo `requirements.txt`).
+No Windows, com Python 3.11 ou superior:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
 pip install -r requirements.txt
+python main.py dashboard
 ```
 
-Se o PowerShell bloquear a ativação do ambiente:
+Abra **http://127.0.0.1:8501**. O comando limita o servidor ao próprio computador. Na primeira abertura, crie o acesso principal com usuário e senha de pelo menos 12 caracteres. Os registros que já estavam em `database/trading.db` ficam nesse workspace principal; nada é apagado. Ao recarregar a página, entre novamente.
 
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\.venv\Scripts\Activate.ps1
-```
+Depois de entrar, escolha **Portal** para a sala visual ou **Laboratório** para tarefas e controles. O endereço `http://127.0.0.1:8501/?lab=1` abre inicialmente o Laboratório, após o login. O botão **Sair** fica na barra lateral.
 
-## Comandos
+## O que aparece em cada workspace
+
+- O proprietário cria outros usuários na barra lateral, em **Usuários**. Cada novo usuário recebe seus seis agentes e um banco próprio, sem histórico de operações, tarefas ou credenciais de outra pessoa.
+- Os PDFs comuns permanecem em `reference_docs/shared/` e `reference_docs/agents/<slug>/`. Em **Controle**, cada usuário pode indexá-los localmente; também pode enviar um PDF privado para seu próprio workspace.
+- Conhecimento extraído começa como proposta. Depois de aprová-lo, o proprietário pode **promover à biblioteca global** um item de PDF comum cujo hash ainda corresponde ao arquivo. Somente esses itens globais são compartilhados. Memórias, propostas e operações privadas não são publicadas.
+- Cada usuário configura suas chaves em **Minhas credenciais**, na barra lateral. O cofre local fica cifrado fora do SQLite; as chaves não reaparecem na tela. Variáveis antigas do `.env` não são usadas por uma sessão autenticada. Sem as próprias credenciais, o serviço aparece desconectado.
+
+Guarde sua senha: ainda não há recuperação de conta ou troca de senha pela interface. O cofre de credenciais depende dela. Este login é para uso **local**; o portal online é uma entrega futura.
+
+## Fluxos disponíveis
+
+- **Agentes e documentos:** tarefas de IA só ocorrem ao clicar para executá-las; incluir trechos de PDF em contexto externo exige autorização explícita por tarefa.
+- **Mercado:** snapshots e candles persistidos têm fonte e horário. Histórico não é cotação atual nem preço executável. Binance Spot público fornece dados cripto; Alpaca IEX opcional fornece apenas histórico de ações.
+- **Estratégias e backtests:** regras versionadas exigem aprovação humana; resultados são históricos/simulados, com custos e limitações identificados.
+- **Paper local:** oportunidades passam por risco, confirmação de quantidade, condução sob demanda e diário. Não há capital inicial presumido.
+- **Binance Spot Testnet:** ordens virtuais externas têm confirmação humana específica, consulta e cancelamento. O estado é separado do paper local; compras preenchidas não recebem stop automático. Sem credenciais Testnet do usuário, o conector fica desconectado.
+- **XP Trader 5.0.4.34:** desconectado. A [investigação](docs/integrations/xp-trader-5.0.4.34.md) ainda depende de confirmação da licença, do SDK e da conta exclusivamente simulada.
+
+## Comandos e provas
 
 ```powershell
 python main.py status
 python main.py test
-python main.py dashboard
+python -m scripts.run_delivery13 --prova
+python -m scripts.check_delivery13_ui
 ```
 
-O portal abre em `http://localhost:8501`. O modo padrão preserva `referencia.html` como referência visual, mas monta uma versão localizada da interface usando agentes, documentos, eventos e contagens do banco local.
+`status` mostra os seis agentes do workspace principal. `test` é a suíte obrigatória. As duas provas da Entrega 13 usam bancos temporários e credenciais sintéticas, sem chamadas externas.
 
-## Cópia da referência
+Para a prova visual, instale o navegador de teste uma vez com `python -m playwright install chromium`.
 
-- O arquivo de referência permanece intacto. O portal adapta seus rótulos para pt-BR e usa os seis agentes persistidos no SQLite.
-- A página padrão não consulta o GitHub nem a Kraken e não cria agentes, cotações, capital, operações ou resultados de demonstração.
-- Mercado e XP Trader aparecem como desconectados. Nenhuma ordem é preparada ou enviada.
-- A página mantém uma única rolagem vertical; no celular, a sala pode ser deslocada na horizontal para mostrar todas as mesas.
-- Para voltar à experiência local de seis agentes e aos registros SQLite, abra `http://localhost:8501/?lab=1`.
-
-## Laboratório local
-
-Neste modo, agentes, tarefas, documentos indexados, memória, eventos e demais registros usam `database\trading.db` e sobrevivem a reinicializações. A tela padrão também lê esses dados quando o portal é carregado.
-
-- **Sala de análise** — seis mesas locais; sala de execução isolada; contexto, conhecimento, memória, revisão e tarefas no perfil do agente.
-- **Mercado** — sem feed conectado.
-- **Operações** — eventos de sistema separados de operações simuladas conciliadas.
-- **Informe** — resumo do estado local e resultados persistidos.
-- **Controle** — bloqueios, biblioteca local, provedor de IA e conexões ainda pendentes.
-- **Laboratório** — importa CSV OHLCV e executa backtests após aprovação explícita.
-- **Evolução do capital** — usa somente operações simuladas encerradas; não infere saldo inicial.
-
-## Biblioteca de PDFs
-
-Coloque documentos comuns em `reference_docs\shared\` e documentos específicos em `reference_docs\agents\<slug>\`. Slugs: `research-agent`, `market-analyst`, `fundamental-analyst`, `strategy-backtest`, `risk-manager` e `execution-agent`.
-
-No modo `?lab=1`, em **Controle**, use **Indexar PDFs locais**. A extração acontece no computador e registra hash, páginas e trechos no SQLite. Arquivos sem texto extraível ou com erro ficam identificados. A reindexação não duplica conteúdo se o hash não mudou.
-
-Por padrão, documentos não saem do computador. Uma tarefa só inclui trechos indexados quando isso é marcado no formulário e o envio ao provedor é confirmado.
-
-## Provedor de IA
-
-O conector aceita uma API compatível com OpenAI Chat Completions. Nenhuma conexão é iniciada automaticamente. Configure as variáveis no `.env` da raiz ou no ambiente do processo que inicia o portal:
-
-- `TRADING_LAB_LLM_BASE_URL` — URL base do provedor.
-- `TRADING_LAB_LLM_MODEL` — identificador do modelo.
-- `TRADING_LAB_LLM_API_KEY` — chave do provedor externo; para endpoint local pode ficar vazia.
-
-Exemplo de endpoint local: `http://localhost:11434/v1`. Para provedores externos, use HTTPS. O valor da chave não aparece na interface nem é armazenado no banco. A chamada ocorre somente ao executar uma tarefa.
-
-## Chaves de dados Alpaca
-
-Preencha no `.env` da raiz do projeto:
-
-```dotenv
-ALPACA_API_KEY=seu_Key_ID
-ALPACA_API_SECRET=seu_Secret_Key
-```
-
-O primeiro campo recebe o **Key ID** e o segundo o **Secret Key** da conta individual Trading API. O endereço do conector de dados é `https://data.alpaca.markets`; o endpoint de Trading/Paper fornecido pela Alpaca não é usado aqui. O acesso atual busca apenas barras históricas `feed=iex` após clique explícito no Laboratório. Não existe envio de ordens. Reinicie `python main.py dashboard` após preencher ou alterar o `.env`.
-
-O arquivo `.env` é ignorado pelo Git. `.env.example` contém apenas os nomes dos campos, sem valores reais. Variáveis definidas no ambiente do processo têm prioridade sobre o `.env`. Não cole as chaves no chat nem as salve no SQLite.
-
-## Aprendizado e segurança
-
-Notas e aprendizados começam como propostas. Revisões de erro preservam observação, hipótese e mudança proposta. Só uma aprovação humana inclui o aprendizado no contexto futuro. Rejeições também ficam no histórico.
-
-Nenhuma ordem real pode ser preparada ou enviada. A conexão com XP Trader 5.0.4.34 não está implementada nem validada; a ProfitDLL da Nelogica é um produto separado e exige confirmar licença, SDK e cobertura para a versão exata. Criptoativos e ações dos EUA também exigem fontes de dados próprias.
-
-## Backtests com CSV
-
-No **Laboratório** do modo `?lab=1`, importe um CSV UTF-8 com `timestamp,open,high,low,close,volume`. Informe símbolo, intervalo e origem declarada. O aplicativo valida sequência de horários, OHLC e volume; guarda barras e SHA-256 no SQLite.
-
-O único motor atual testa cruzamento de médias simples comprado: lê o sinal no fechamento e preenche na abertura da barra seguinte. Você define as janelas, taxas e slippage. Salve a estratégia, revise-a, aprove a versão e confirme custos antes de executar. O teste não anualiza retorno e não inclui benchmark, dividendos, capital inicial ou execução intraday real.
-
-## Verificação atual
-
-1. `python main.py status` apresenta os seis agentes persistidos.
-2. `python main.py test` cobre UI, SQLite, biblioteca local, memória e bloqueio de chamadas de IA sem configuração.
-3. `python main.py dashboard` inicia o portal local.
-4. Nenhum feed de mercado, conta de simulação ou ordem de corretora é presumido ativo.
+Detalhes de arquitetura, tabelas, proveniência e limitações estão em [PROJECT_DOCUMENTATION.md](PROJECT_DOCUMENTATION.md). O [roadmap](TRADING_AGENT_LAB_MASTER_ROADMAP.md) separa a próxima etapa de portal online deste laboratório local.

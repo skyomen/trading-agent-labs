@@ -8,6 +8,11 @@ __pycache__/
 .pytest_cache/
 database/trading.db
 database/trading.db-*
+database/identity.db*
+database/global_knowledge.db*
+database/workspaces/
+database/vault/
+reference_docs/workspaces/
 reference_docs/**/*.pdf
 _sandbox/
 .impeccable/review/

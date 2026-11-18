@@ -29,7 +29,7 @@ Laboratório local para acompanhar seis agentes de pesquisa intraday, organizar 
 
 ## Contratos técnicos
 
-- **TRD-01** — Interface Streamlit; persistência SQLite em `database/trading.db`, acessada somente por `database/store.py`.
+- **TRD-01** — Interface Streamlit; persistência SQLite acessada somente por `database/store.py`. `database/trading.db` permanece como workspace legado do proprietário; contas adicionais usam bancos isolados em `database/workspaces/`.
 - **TRD-02** — Migrações aditivas e idempotentes. Preservar agentes, eventos e histórico já existentes.
 - **TRD-03** — `python main.py status`, `python main.py test` e `python main.py dashboard` são os comandos CLI suportados.
 - **TRD-04** — `requirements.txt` é a fonte das dependências Python.
@@ -96,6 +96,11 @@ Laboratório local para acompanhar seis agentes de pesquisa intraday, organizar 
 
 - **REQ-27** — A investigação do XP Trader 5.0.4.34 separa capacidades genéricas da ProfitDLL de direitos da licença XP. Dados, API, SDK, simulação, execução e limitações têm evidência e lacunas registradas em `docs/integrations/xp-trader-5.0.4.34.md`. Sem confirmação específica de licença, SDK e conta exclusivamente simulada roteável, XP permanece desconectado; nenhum adaptador XP, login ou ordem será implementado nesta entrega. BTCUSDT, ETHUSDT, AAPL e MSFT continuam em fontes próprias.
 - **TRD-16** — Uma integração XP futura exige nova decisão e plano, manual/SDK oficial versionado com hash, direitos de dados e prova de separação inequívoca entre conta simulada e real. A documentação pública da ProfitDLL não substitui essa confirmação.
+
+## Entrega 13 — Multiusuário local
+
+- **REQ-28** — Exigir login local antes de mostrar Portal ou Laboratório. O primeiro cadastro cria o proprietário, cujo histórico permanece em `database/trading.db`; somente ele cria outras contas. Cada conta adicional tem workspace SQLite próprio e vê somente seus registros. Conhecimento comum só aparece globalmente após aprovação, promoção explícita do proprietário e confirmação do hash atual da fonte. PDFs particulares permanecem no diretório do usuário. Cada usuário configura suas credenciais; a interface autenticada não utiliza chaves do ambiente do processo como fallback. O app local escuta em `127.0.0.1`; publicação na internet pertence à Entrega 14.
+- **TRD-17** — `database/store.py` concentra o acesso aos bancos de identidade, conhecimento global e workspaces; `services/auth.py` verifica senhas Argon2id e limita tentativas; `services/credential_vault.py` cifra segredos por usuário fora do SQLite. `services/global_knowledge.py` valida aprovação e proveniência na promoção. `python -m scripts.run_delivery13 --prova` demonstra isolamento e credenciais sem rede.
 
 ## Contrato visual e rastreabilidade
 

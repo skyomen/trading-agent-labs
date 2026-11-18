@@ -4,14 +4,14 @@
 
 ## 1. Visão geral
 
-Trading Agent Lab é um aplicativo local em Python e Streamlit para organizar seis agentes de pesquisa intraday, registrar conhecimento e eventos, indexar PDFs localmente e avaliar estratégias sobre histórico OHLCV importado. O armazenamento principal é SQLite em `database/trading.db`.
+Trading Agent Lab é um aplicativo local em Python e Streamlit para organizar seis agentes de pesquisa intraday, registrar conhecimento e eventos, indexar PDFs localmente e avaliar estratégias sobre histórico OHLCV importado. O proprietário conserva seu histórico SQLite em `database/trading.db`; cada conta adicional usa um banco próprio em `database/workspaces/`.
 
 O modo de operação é local e simulado. Não existe integração validada com corretora, não se envia ordem real e o aplicativo não fabrica cotação, saldo, P&L ou atividade para preencher a interface. As telas que dependem de dados ausentes mostram estados vazios ou integração desconectada.
 
 O projeto tem duas apresentações:
 
 1. **Portal de referência (padrão):** localiza para pt-BR a estrutura HTML de `referencia.html` e injeta dados locais, sem executar os carregadores externos do HTML original.
-2. **Laboratório Streamlit:** acessível por `?lab=1`; oferece os fluxos locais de perfil do agente, documentos, memória, revisão, tarefas, estratégias, CSV/backtest, operações simuladas e conexões.
+2. **Laboratório Streamlit:** selecionado após login; oferece os fluxos locais de perfil do agente, documentos, memória, revisão, tarefas, estratégias, CSV/backtest, operações simuladas e conexões.
 
 ## 2. Como executar
 
@@ -44,8 +44,7 @@ python main.py dashboard
 - `test` executa a descoberta `unittest` em `tests/`.
 - `dashboard` inicia Streamlit em `app.py`, sem coleta de estatísticas de uso do navegador.
 - O atalho `iniciar_trading_lab.bat` executa `python main.py dashboard` a partir da pasta do projeto.
-- O endereço padrão do portal é `http://localhost:8501`.
-- Para abrir o laboratório detalhado, use `http://localhost:8501/?lab=1`.
+- O endereço padrão do portal é `http://127.0.0.1:8501`. No primeiro acesso, cadastre o proprietário e entre. Depois do login, escolha Portal ou Laboratório na navegação.
 
 ## 3. Organização do código
 
@@ -54,7 +53,10 @@ python main.py dashboard
 | `main.py` | CLI com os comandos `status`, `test` e `dashboard`; inicializa o armazenamento. |
 | `app.py` | Portal padrão, localização da referência HTML e interface Streamlit do laboratório. |
 | `database/store.py` | Única camada de acesso SQLite; inicialização/migrações idempotentes e operações de leitura/escrita. |
-| `database/trading.db` | Banco SQLite local já existente; contém estado variável do ambiente. |
+| `database/trading.db` | Workspace legado do proprietário, preservado. |
+| `database/identity.db`, `database/global_knowledge.db` | Contas locais e conhecimento comum promovido, respectivamente. |
+| `database/workspaces/`, `database/vault/` | Bancos isolados das demais contas e cofres cifrados por usuário. |
+| `services/auth.py`, `services/credential_vault.py`, `services/global_knowledge.py` | Login local, segredos individuais e promoção controlada de conhecimento comum. |
 | `services/documents.py` | Descoberta, hash, extração local de PDFs, divisão em trechos e seleção de contexto autorizado. |
 | `services/agents.py` | Configuração e chamada explícita a provedor compatível com OpenAI Chat Completions; registro das execuções. |
 | `services/backtest.py` | Validação/importação de CSV OHLCV e motor histórico de cruzamento de médias simples. |
@@ -347,7 +349,7 @@ O comando de prova do projeto é `python main.py test`. Na Entrega 2, 35 testes 
 
 - O uso esperado é local e em simulação; nenhuma ordem real deve ser preparada ou enviada.
 - PDFs são processados localmente por padrão. Só contexto explicitamente selecionado e autorizado pode seguir a um LLM externo durante uma tarefa.
-- Chaves de provedor são lidas do ambiente, não do SQLite, e não devem ser incluídas em logs, Markdown ou commits.
+- No portal autenticado, chaves de provedor vêm apenas do cofre cifrado do usuário ativo. O modo CLI legado ainda pode usar variáveis de ambiente. Segredos não entram em SQLite, logs, Markdown ou commits.
 - Não colocar credenciais, extratos ou dados pessoais em `reference_docs/`.
 - Eventos e falhas podem conter textos de operação. Não os copie para documentação ou logs externos sem revisar conteúdo.
 - `database/trading.db` guarda dados e histórico locais; faça cópia/backup de forma operacionalmente controlada antes de qualquer manutenção manual. Não edite o banco diretamente: use a camada `database/store.py`.
@@ -357,7 +359,7 @@ O comando de prova do projeto é `python main.py test`. Na Entrega 2, 35 testes 
 ### Implementado no código
 
 - Portal padrão localizado baseado na referência HTML com dados locais do SQLite.
-- Laboratório Streamlit disponível em `?lab=1`.
+- Laboratório Streamlit selecionável após login.
 - Seis agentes persistidos, eventos e painéis alimentados pelos dados locais.
 - Persistência SQLite para documentos/trechos, tarefas, memórias, revisões, estratégias, datasets, barras, backtests, operações e conexões.
 - Indexação local de PDFs com hash, páginas, trechos, status/erro e filtragem do contexto por agente.
@@ -373,6 +375,7 @@ O comando de prova do projeto é `python main.py test`. Na Entrega 2, 35 testes 
 - Ciclo paper completo (Entrega 9): a abertura cria `paper_journal` com uma ficha por operação; o fechamento completa a ficha com saída, premissas de custo, taxas simuladas, P&L líquido em USDT e resultado líquido em R. Operação, `pipeline_runs.realized_r`, diário e estágio de condução são concluídos na mesma transação. O portal padrão e o Laboratório mostram o diário e estados vazios. `python -m scripts.run_delivery9 --prova` demonstra sinal, risco, entrada humana, condução, saída e diário em banco temporário com candles sintéticos.
 - Aprendizado controlado (Entrega 10): `services/paper_learning.py` analisa localmente apenas operações paper encerradas com trilha e diário íntegros. O mínimo de projeto é 30 operações da mesma estratégia/símbolo/intervalo em dois dias UTC; a proposta guarda IDs e digest SHA-256. Revisão humana é explícita; nova versão, se criada, começa como rascunho não executável. Com zero operações paper no banco local em 17/11/2026, nenhuma hipótese real foi gerada.
 - Broker Paper (Entrega 11): `services/brokers/base.py` define a interface e `services/brokers/binance_spot_testnet.py` acessa somente o host fixo da Binance Spot Testnet. `services/broker_paper.py` exige candidato BUY autorizado, quantidade e preço LIMIT do usuário, filtros e cotação recente da Testnet e confirmação humana. `broker_paper_orders` registra a intenção antes do POST; timeout é `unknown` e exige consulta, sem reenvio automático. Compra, consulta, cancelamento e venda de saída manual são ações separadas; saída não excede quantidade comprada reconciliada. Não há stop automático, saldo ou P&L da Testnet agregados ao paper local. Sem credenciais exclusivas, a conexão permanece desconectada. A renderização das telas não chama endpoints privados.
+- Multiusuário local (Entrega 13): o primeiro cadastro cria o proprietário e preserva seu banco legado. Outras contas são criadas somente pelo proprietário e recebem bancos próprios. Portal e Laboratório exigem login. PDFs particulares são separados por usuário; itens comuns só entram na base global após aprovação, promoção explícita e verificação do hash. Credenciais individuais ficam cifradas fora do SQLite e não herdam o `.env` do processo na sessão autenticada.
 
 ### Ainda não conectado, sem dados ou dependente de decisão
 
@@ -390,6 +393,12 @@ O comando de prova do projeto é `python main.py test`. Na Entrega 2, 35 testes 
 - Entrega 8: uma posição `open` que já deveria ter fechado (bateu stop/alvo) só fecha quando alguém abre a tela de condução — se ninguém abrir, ela continua `open` mesmo tendo batido o stop há horas; isso é limitação conhecida, não bug. A condução continua dependente do coletor Binance estar rodando (mesma dependência já aceita para o sinal na Entrega 7, agora também para conduzir posição aberta). A inconsistência entre `rules_json.management` (dado declarado) e o comportamento real de trailing (hardcoded por nome de setup) agora existe em DOIS motores (backtest e paper engine), não corrigida nesta entrega — candidata a correção numa entrega futura dedicada.
 
 ## 17. Rastreabilidade
+
+### Entrega 13: Multiusuário local
+
+Plano aprovado em `docs/plans/entrega-13-multiusuario.md`. `database/store.py` resolve o banco por contexto de usuário e conserva `database/trading.db` como workspace do proprietário. `identity.db` guarda identificador, papel e verificador Argon2id; `global_knowledge.db` guarda apenas itens comuns promovidos. O cofre por usuário usa AES-GCM com chave derivada da senha e salt individual. Recarregar a página exige novo login; não há recuperação de senha nesta entrega. `main.py dashboard` escuta apenas `127.0.0.1`. Esta autenticação local não é publicação online; TLS, cookies, recuperação e operação em múltiplas instâncias pertencem à Entrega 14.
+
+`python -m scripts.run_delivery13 --prova` demonstrou dois usuários, bancos isolados, conhecimento comum e cofre sem rede ou alterações no banco real. `python -m scripts.check_delivery13_ui` verificou login, Portal e Laboratório em 1440×1000, 390×844 e 320×740 sem rolagem horizontal. `python main.py test` concluiu 157 testes com `OK`; `python main.py status` preservou os seis agentes do banco legado. O histórico do proprietário continua no banco legado; conectar LLM, Alpaca IEX ou Binance Spot Testnet exige cadastrar novamente as credenciais no cofre pessoal, além das ações e confirmações já exigidas pelos respectivos fluxos.
 
 ### Entrega 12: Investigação XP Trader 5.0.4.34
 

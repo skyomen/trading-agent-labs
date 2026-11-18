@@ -1742,6 +1742,10 @@ User Workspace
 
 Cada usuário configura suas próprias credenciais.
 
+### Registro de implementação em 17/11/2026
+
+Plano aprovado: `docs/plans/entrega-13-multiusuario.md`. O login local com senha Argon2id protege Portal e Laboratório. O proprietário conserva `database/trading.db`; contas adicionais recebem bancos SQLite próprios e diretórios particulares de PDFs. Conhecimento comum exige aprovação, promoção explícita do proprietário e hash atual da fonte. As credenciais de cada usuário ficam cifradas fora do SQLite e não herdam chaves do ambiente na interface autenticada. `python main.py dashboard` escuta somente `127.0.0.1`. A prova offline é `python -m scripts.run_delivery13 --prova`; a verificação visual é `python -m scripts.check_delivery13_ui`. Publicação na internet permanece na Entrega 14.
+
 ---
 
 # 56. ENTREGA 14 — PORTAL ONLINE

@@ -19,6 +19,8 @@ def main():
                 "app.py",
                 "--server.headless",
                 "true",
+                "--server.address",
+                "127.0.0.1",
                 "--browser.gatherUsageStats",
                 "false",
             ],

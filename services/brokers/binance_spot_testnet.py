@@ -3,7 +3,6 @@
 import hashlib
 import hmac
 import json
-import os
 import time
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -11,7 +10,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from services.config import load_local_env
+from services.config import current_credentials, load_local_env
 
 BASE_URL = "https://testnet.binance.vision"
 SYMBOLS = frozenset({"BTCUSDT", "ETHUSDT"})
@@ -38,8 +37,8 @@ class BinanceSpotTestnet:
         load_local_env()
         self._opener = opener
         self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
-        self._key = os.environ.get("BINANCE_SPOT_TESTNET_API_KEY", "")
-        self._secret = os.environ.get("BINANCE_SPOT_TESTNET_API_SECRET", "")
+        self._key = current_credentials().get("BINANCE_SPOT_TESTNET_API_KEY", "")
+        self._secret = current_credentials().get("BINANCE_SPOT_TESTNET_API_SECRET", "")
 
     @property
     def configured(self):

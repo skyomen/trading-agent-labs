@@ -19,7 +19,13 @@ class PaperLearningTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.db_patch = patch.object(store, "DB_PATH", Path(self.tmp.name) / "learning.db")
         self.db_patch.start()
+        self.identity_patch = patch.object(store, "IDENTITY_DB_PATH", Path(self.tmp.name) / "identity.db")
+        self.identity_patch.start()
+        self.global_patch = patch.object(store, "GLOBAL_DB_PATH", Path(self.tmp.name) / "global.db")
+        self.global_patch.start()
         store.initialize()
+        self.owner_id = store.create_identity_user("test_owner", "testhash",
+                                                   "dGVzdHNhbHQxMjM0NTY3OA==", "owner")
         self.rules = {"engine": "setup_pattern_v1", "setup_id": "SETUP_03",
                       "setup_name": "BOP", "side": "buy", "timeframes": ["2m"],
                       "approval": "rules_human_approved",
@@ -31,6 +37,8 @@ class PaperLearningTests(unittest.TestCase):
         store.approve_strategy(self.strategy_id)
 
     def tearDown(self):
+        self.global_patch.stop()
+        self.identity_patch.stop()
         self.db_patch.stop()
         self.tmp.cleanup()
 
@@ -164,6 +172,8 @@ class PaperLearningTests(unittest.TestCase):
             self.seed_trade(index, day=index // 15)
         result = paper_learning.analyze_cohort(self.strategy_id, "BTCUSDT", "2m")
         app = AppTest.from_file(str(APP_PATH))
+        app.session_state["auth-user"] = {"id": self.owner_id, "username": "test_owner", "role": "owner"}
+        app.session_state["vault-key"] = bytes(32)
         app.query_params["lab"] = "1"
         app.session_state["tal-view"] = "Orquestração"
         app.run()

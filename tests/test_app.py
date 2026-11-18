@@ -21,8 +21,16 @@ INDEXED_LIBRARY = [{"path": SOURCE_PDF, "status": "indexed",
                     "record": {"sha256": "fixture-pdf-hash"}}]
 
 
-def app_for_local_lab():
+def signed_app():
     app = AppTest.from_file(str(APP_PATH))
+    owner = store.get_identity_user(username="test_owner")
+    app.session_state["auth-user"] = {key: owner[key] for key in ("id", "username", "role")}
+    app.session_state["vault-key"] = bytes(32)
+    return app
+
+
+def app_for_local_lab():
+    app = signed_app()
     app.query_params["lab"] = "1"
     return app
 
@@ -149,14 +157,24 @@ class DashboardTests(unittest.TestCase):
         self.db_path = Path(self.tmp.name) / "dashboard.db"
         self.db_patch = patch.object(store, "DB_PATH", self.db_path)
         self.db_patch.start()
+        self.identity_patch = patch.object(store, "IDENTITY_DB_PATH", Path(self.tmp.name) / "identity.db")
+        self.identity_patch.start()
+        self.global_patch = patch.object(store, "GLOBAL_DB_PATH", Path(self.tmp.name) / "global.db")
+        self.global_patch.start()
+        self.workspace_patch = patch.object(store, "WORKSPACES_DIR", Path(self.tmp.name) / "workspaces")
+        self.workspace_patch.start()
         store.initialize()
+        store.create_identity_user("test_owner", "testhash", "dGVzdHNhbHQxMjM0NTY3OA==", "owner")
 
     def tearDown(self):
+        self.workspace_patch.stop()
+        self.global_patch.stop()
+        self.identity_patch.stop()
         self.db_patch.stop()
         self.tmp.cleanup()
 
     def test_default_portal_localizes_reference_and_uses_local_agent_records(self):
-        app = AppTest.from_file(str(APP_PATH)).run()
+        app = signed_app().run()
 
         self.assertFalse(app.exception, [item.message for item in app.exception])
         self.assertEqual(len(app.get("iframe")), 1)
@@ -197,7 +215,7 @@ class DashboardTests(unittest.TestCase):
 
     def test_default_portal_separates_analyst_room_from_execution_desk(self):
         """AppTest não roda o JS do portal; o que se verifica aqui é a fonte embutida."""
-        app = AppTest.from_file(str(APP_PATH)).run()
+        app = signed_app().run()
 
         self.assertFalse(app.exception, [item.message for item in app.exception])
         rendered = app.get("iframe")[0].proto.srcdoc
@@ -221,7 +239,7 @@ class DashboardTests(unittest.TestCase):
 
     def test_default_portal_room_switch_keeps_selection_and_blocked_orders_notice(self):
         """Trocar de sala não pode deixar a ficha num agente fora da sala visível."""
-        app = AppTest.from_file(str(APP_PATH)).run()
+        app = signed_app().run()
 
         self.assertFalse(app.exception, [item.message for item in app.exception])
         rendered = app.get("iframe")[0].proto.srcdoc
@@ -238,7 +256,7 @@ class DashboardTests(unittest.TestCase):
 
     def test_default_portal_embeds_persisted_event_history_without_fake_operations(self):
         store.add_event("Risk Manager", "NOTICE", "Revisão local aguardando aprovação")
-        app = AppTest.from_file(str(APP_PATH)).run()
+        app = signed_app().run()
 
         self.assertFalse(app.exception, [item.message for item in app.exception])
         rendered = app.get("iframe")[0].proto.srcdoc
@@ -248,7 +266,7 @@ class DashboardTests(unittest.TestCase):
         self.assertNotIn("Dinero ficticio", rendered)
 
     def test_sala_balance_card_shows_neutral_state_without_closed_operations(self):
-        app = AppTest.from_file(str(APP_PATH)).run()
+        app = signed_app().run()
 
         self.assertFalse(app.exception, [item.message for item in app.exception])
         rendered = app.get("iframe")[0].proto.srcdoc
@@ -266,7 +284,7 @@ class DashboardTests(unittest.TestCase):
             "BTCUSDT", "buy", quantity=2, entry_price=100.0, exit_price=150.0, fees=5.0)
         expected_pnl = (operation["exit_price"] - operation["entry_price"]) * operation["quantity"] - operation["fees"]
         self.assertEqual(expected_pnl, 95.0)
-        app = AppTest.from_file(str(APP_PATH)).run()
+        app = signed_app().run()
 
         self.assertFalse(app.exception, [item.message for item in app.exception])
         rendered = app.get("iframe")[0].proto.srcdoc
@@ -284,7 +302,7 @@ class DashboardTests(unittest.TestCase):
             "BTCUSDT", "buy", quantity=2, entry_price=150.0, exit_price=100.0, fees=5.0)
         expected_pnl = (operation["exit_price"] - operation["entry_price"]) * operation["quantity"] - operation["fees"]
         self.assertEqual(expected_pnl, -105.0)
-        app = AppTest.from_file(str(APP_PATH)).run()
+        app = signed_app().run()
 
         self.assertFalse(app.exception, [item.message for item in app.exception])
         rendered = app.get("iframe")[0].proto.srcdoc
@@ -298,7 +316,7 @@ class DashboardTests(unittest.TestCase):
         strategy_id = store.save_strategy("VBS", rules, "PDF local", status="approved")
         store.save_backtest(strategy_id, "BTCUSDT", "2m", "Binance Spot public", "abc123",
                             {"kind": "historical_simulation", "signal_count": 4, "trade_count": 1})
-        app = AppTest.from_file(str(APP_PATH)).run()
+        app = signed_app().run()
         self.assertFalse(app.exception, [item.message for item in app.exception])
         rendered = app.get("iframe")[0].proto.srcdoc
         self.assertIn('"setup_name": "VBS"', rendered)
@@ -306,7 +324,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('"trade_count": 1', rendered)
         self.assertIn("Abrir laboratório completo", rendered)
 
-    def test_market_pages_show_historical_iex_and_connector_readiness(self):
+    def test_market_pages_show_historical_iex_without_process_credential_fallback(self):
         bars = [{"timestamp": f"2026-11-12T14:3{i}:00Z", "open": 100.0,
                  "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10.0}
                 for i in range(3)]
@@ -314,11 +332,11 @@ class DashboardTests(unittest.TestCase):
                                       bars, metadata={"market": "us_equity", "end_utc": bars[-1]["timestamp"]},
                                       canonical_sha256="fixture-canonical")
         with patch.dict("os.environ", {"ALPACA_API_KEY": "test-key", "ALPACA_API_SECRET": "test-secret"}):
-            portal = AppTest.from_file(str(APP_PATH)).run()
+            portal = signed_app().run()
             self.assertFalse(portal.exception)
             rendered = portal.get("iframe")[0].proto.srcdoc
             self.assertIn('"source": "Alpaca IEX"', rendered)
-            self.assertIn('"alpaca_configured": true', rendered)
+            self.assertIn('"alpaca_configured": false', rendered)
             self.assertNotIn("test-secret", rendered)
             app = app_for_local_lab()
             app.session_state["tal-nav"] = "Mercado"
@@ -468,7 +486,7 @@ class DashboardTests(unittest.TestCase):
         store.save_validation_run(strategy["id"], "BTCUSDT", "2m", dataset["id"],
                                   dataset["sha256"], report)
         with patch.dict("os.environ", {"ALPACA_API_KEY": "test-key", "ALPACA_API_SECRET": "test-secret"}):
-            portal = AppTest.from_file(str(APP_PATH)).run()
+            portal = signed_app().run()
 
         self.assertFalse(portal.exception, [item.message for item in portal.exception])
         rendered = portal.get("iframe")[0].proto.srcdoc
@@ -599,7 +617,7 @@ class DashboardTests(unittest.TestCase):
     def test_default_portal_snapshot_includes_pipeline_runs_and_pendencias(self):
         strategy = approved_setup_strategy()
         pending_pipeline_run(strategy)
-        app = AppTest.from_file(str(APP_PATH)).run()
+        app = signed_app().run()
 
         self.assertFalse(app.exception, [item.message for item in app.exception])
         rendered = app.get("iframe")[0].proto.srcdoc
@@ -679,7 +697,7 @@ class DashboardTests(unittest.TestCase):
         operation = store.list_paper_operations()[0]
         store.close_paper_operation(operation["id"], 101.0, "target",
                                     "2026-11-16T00:10:00Z", realized_r=0.5)
-        app = AppTest.from_file(str(APP_PATH)).run()
+        app = signed_app().run()
 
         self.assertFalse(app.exception, [item.message for item in app.exception])
         rendered = app.get("iframe")[0].proto.srcdoc
@@ -695,7 +713,7 @@ class DashboardTests(unittest.TestCase):
                                     "2026-11-16T00:10:00Z", fees=0.1,
                                     realized_r=0.4,
                                     journal_details={"net_pnl": 0.15, "quote_currency": "USDT"})
-        portal = AppTest.from_file(str(APP_PATH)).run()
+        portal = signed_app().run()
         self.assertFalse(portal.exception)
         source = portal.get("iframe")[0].proto.srcdoc
         self.assertIn("function blocoDiario()", source)
@@ -710,7 +728,7 @@ class DashboardTests(unittest.TestCase):
                             for item in lab.markdown))
 
     def test_paper_learning_empty_state_is_explicit_in_both_views(self):
-        portal = AppTest.from_file(str(APP_PATH)).run()
+        portal = signed_app().run()
         self.assertFalse(portal.exception)
         source = portal.get("iframe")[0].proto.srcdoc
         self.assertIn("function blocoAprendizado()", source)

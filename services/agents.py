@@ -1,13 +1,14 @@
 """Explicitly triggered, auditable calls to an OpenAI-compatible model."""
 
 import json
-import os
 import urllib.error
 import urllib.request
 from urllib.parse import urlparse
 
 from database import store
 from services import documents
+from services import global_knowledge
+from services.config import current_credentials
 
 ROLE_GUIDANCE = {
     "Research Agent": "Organize the supplied technical material. Cite each claim as [filename, p. N].",
@@ -20,13 +21,13 @@ ROLE_GUIDANCE = {
 
 
 def provider_configured(environ=None):
-    env = os.environ if environ is None else environ
+    env = current_credentials() if environ is None else environ
     return bool(env.get("TRADING_LAB_LLM_BASE_URL", "").strip()
                 and env.get("TRADING_LAB_LLM_MODEL", "").strip())
 
 
 def provider_summary(environ=None):
-    env = os.environ if environ is None else environ
+    env = current_credentials() if environ is None else environ
     base = env.get("TRADING_LAB_LLM_BASE_URL", "").strip()
     model = env.get("TRADING_LAB_LLM_MODEL", "").strip()
     key_present = bool(env.get("TRADING_LAB_LLM_API_KEY", "").strip())
@@ -63,6 +64,9 @@ def _message_context(agent, include_documents):
         for item in store.list_knowledge_items(status="approved"):
             if current_hashes.get(item["source_path"]) == item["source_sha256"]:
                 parts.append(f"[CONHECIMENTO APROVADO: {item['source_path']}, p. {item['page_number']} · {item['title']}]\n{item['evidence']}")
+        for item in global_knowledge.list_fresh():
+            parts.append(f"[BIBLIOTECA GLOBAL APROVADA: {item['source_path']}, "
+                         f"p. {item['page_number']} · {item['title']}]\n{item['evidence']}")
     memories = store.list_memories(agent, include_pending=False)
     for memory in memories[:12]:
         parts.append(f"[MEMÓRIA APROVADA: {memory['source']}]\n{memory['content']}")
@@ -107,7 +111,7 @@ def run_agent_task(agent, task, include_documents=False, authorize_external_cont
         "max_tokens": 1200,
     }).encode("utf-8")
     headers = {"Content-Type": "application/json"}
-    api_key = os.environ.get("TRADING_LAB_LLM_API_KEY", "").strip()
+    api_key = current_credentials().get("TRADING_LAB_LLM_API_KEY", "").strip()
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     request = urllib.request.Request(
@@ -123,6 +127,7 @@ def run_agent_task(agent, task, include_documents=False, authorize_external_cont
         store.add_event(agent, "INFO", f"Tarefa concluída · execução local #{run_id}")
         return {"id": run_id, "output": output, "context": context_summary}
     except Exception as exc:
-        store.update_agent_run(run_id, str(exc)[:2000], "failed")
-        store.add_event(agent, "ERROR", f"Tarefa falhou · execução local #{run_id} · {str(exc)[:300]}")
-        raise
+        failure = f"Falha do provedor ({type(exc).__name__}); nenhum resultado foi aceito."
+        store.update_agent_run(run_id, failure, "failed")
+        store.add_event(agent, "ERROR", f"Tarefa falhou · execução local #{run_id} · {failure}")
+        raise RuntimeError(failure) from None

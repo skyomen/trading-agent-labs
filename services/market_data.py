@@ -5,11 +5,9 @@ Only market data is accessed. No trading endpoint, account or order capability.
 
 import argparse
 import csv
-import csv
 import io
 import json
 import logging
-import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -18,7 +16,7 @@ from urllib.request import Request, urlopen
 
 from database import store
 from services import datasets
-from services.config import load_local_env
+from services.config import current_credentials, load_local_env
 
 REST = "https://data-api.binance.vision/api/v3/klines"
 STREAM = "wss://data-stream.binance.vision:443/ws/{}@kline_1m"
@@ -82,8 +80,8 @@ def import_alpaca_stock(symbol, start_utc, end_utc):
     """Import IEX historical bars when local read-only data credentials exist."""
     if symbol not in STOCKS:
         raise ValueError("Ação não suportada.")
-    key = os.environ.get("ALPACA_API_KEY", "")
-    secret = os.environ.get("ALPACA_API_SECRET", "")
+    key = current_credentials().get("ALPACA_API_KEY", "")
+    secret = current_credentials().get("ALPACA_API_SECRET", "")
     if not key or not secret:
         raise ValueError("Configure ALPACA_API_KEY e ALPACA_API_SECRET no ambiente local.")
     start = datetime.fromisoformat(start_utc.replace("Z", "+00:00"))

@@ -1,6 +1,7 @@
 """Local, source-preserving PDF indexing for agent context."""
 
 import hashlib
+import re
 from pathlib import Path
 
 from pypdf import PdfReader
@@ -13,9 +14,29 @@ CHUNK_SIZE = 1400
 CHUNK_OVERLAP = 180
 
 
+def save_private_pdf(filename, content):
+    user_id = store.active_user_id()
+    if not user_id:
+        raise PermissionError("Entre no workspace antes de enviar PDFs.")
+    safe_name = Path(filename).name
+    if safe_name != filename or not re.fullmatch(r"[\w .()\-]{1,100}\.pdf", safe_name, re.IGNORECASE):
+        raise ValueError("Nome de PDF inválido.")
+    if not content.startswith(b"%PDF-") or len(content) > 20 * 1024 * 1024:
+        raise ValueError("O arquivo deve ser um PDF de até 20 MB.")
+    folder = REFERENCE_ROOT / "workspaces" / user_id
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / safe_name
+    if path.exists():
+        raise ValueError("Já existe um PDF com esse nome no seu workspace.")
+    path.write_bytes(content)
+    return path
+
+
 def discover_pdfs():
     """Return PDFs from the shared library and known agent folders only."""
-    allowed = (REFERENCE_ROOT / "shared", REFERENCE_ROOT / "agents")
+    allowed = [REFERENCE_ROOT / "shared", REFERENCE_ROOT / "agents"]
+    if store.active_user_id():
+        allowed.append(REFERENCE_ROOT / "workspaces" / store.active_user_id())
     paths = []
     for folder in allowed:
         if folder.exists():
@@ -54,7 +75,11 @@ def index_pdf(path, force=False):
     """Extract a PDF locally and persist page-addressable text chunks."""
     source_path = Path(path)
     path = source_path.resolve()
-    if not path.is_relative_to(REFERENCE_ROOT.resolve()):
+    common = (REFERENCE_ROOT / "shared", REFERENCE_ROOT / "agents")
+    private = (REFERENCE_ROOT / "workspaces" / store.active_user_id()
+               if store.active_user_id() else None)
+    if not any(path.is_relative_to(root.resolve()) for root in common) and not (
+            private and path.is_relative_to(private.resolve())):
         raise ValueError("O PDF precisa estar dentro de reference_docs/shared ou agents.")
     relative = (Path("reference_docs") / source_path.relative_to(REFERENCE_ROOT)).as_posix()
     digest = _digest(path)
@@ -131,5 +156,7 @@ def agent_context(agent, limit=12):
     stale = sorted(item["path"] for item in library
                    if item["path"].startswith("reference_docs/shared/")
                    or item["path"].startswith(specific)
+                   or (store.active_user_id() and item["path"].startswith(
+                       f"reference_docs/workspaces/{store.active_user_id()}/"))
                    if item["status"] in {"stale", "pending", "failed", "no_text"})
     return fresh[:limit], stale

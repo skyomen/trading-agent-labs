@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,7 +32,7 @@ class MarketDataTests(unittest.TestCase):
         self.assertEqual(len(datasets.load_verified(result["id"])["bars"]), 3)
 
     def test_stock_connector_requires_local_credentials(self):
-        with patch.dict(market_data.os.environ, {}, clear=True):
+        with patch.dict(os.environ, {}, clear=True):
             with self.assertRaisesRegex(ValueError, "ALPACA_API_KEY"):
                 market_data.import_alpaca_stock("AAPL", "2026-11-10T00:00:00Z", "2026-11-11T00:00:00Z")
         self.assertEqual(store.list_historical_datasets(), [])
