@@ -8,7 +8,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from database import store
-from services import observability
+from services import observability, risk
 from services.operation_details import build_view, load_chart, build_steps, method_explanation
 from services.lightweight_chart import operation_chart_html
 
@@ -81,10 +81,24 @@ def _status():
     feeds = [row for row in store.list_market_feeds() if row["symbol"] in {"BTCUSDT", "ETHUSDT"}]
     feed_count = sum(observability.feed_freshness(row, now)["current"] for row in feeds)
     blocked = store.get_kill_switch()["enabled"]
-    label = ("Entradas pausadas" if blocked else "Acompanhamento ativo" if active and feed_count == 2
-             else "Automação ativa; feed parcial" if active else "Automação parada")
-    st.markdown(f'<div class="ops-status"><strong>{_esc(label)}</strong><span>Feeds atuais: '
-                f'<strong>{feed_count}/2</strong></span><span>Entrada simulada: <strong>2 USDT</strong></span>'
+    risk_date = now.date().isoformat()
+    committed_r = store.count_committed_risk_r(risk_date)
+    daily_limit_hit = committed_r + risk.RISK_PER_TRADE_R > risk.MAX_DAILY_LOSS_R + 1e-9
+    if blocked:
+        label = "Novas entradas pausadas pelo bloqueio manual"
+    elif daily_limit_hit:
+        label = "Novas entradas bloqueadas pelo limite diário"
+    elif active and feed_count == 2:
+        label = "Acompanhamento ativo · entradas disponíveis"
+    elif active:
+        label = "Acompanhamento ativo · feed parcial"
+    else:
+        label = "Automação parada"
+    st.markdown(f'<div class="ops-status"><strong>{_esc(label)}</strong>'
+                f'<span>Monitoramento: <strong>{"ativo" if active else "parado"}</strong></span>'
+                f'<span>Feeds atuais: <strong>{feed_count}/2</strong></span>'
+                f'<span>R comprometido hoje (UTC): <strong>{committed_r:.1f}/{risk.MAX_DAILY_LOSS_R:.1f} R</strong></span>'
+                '<span>Entrada simulada: <strong>2 USDT</strong></span>'
                 '<span>Tela atualiza a cada 10 s</span></div>', unsafe_allow_html=True)
 
 
@@ -346,10 +360,12 @@ def _detail(view):
     elif not view["journal"] or not view["exit_time"]:
         st.info("Fechamento legado sem diário completo; causa e resultado não foram reconstruídos.")
     else:
+        gross_pnl = details.get("gross_pnl")
         st.markdown(f'<p class="ops-fact-line"><b>Motivo:</b> {_esc(view["exit_label"])} · '
                     f'<b>barra de saída:</b> {_esc(_when(view["exit_time"]))}</p>'
-                    f'<p class="ops-fact-line"><b>Preço:</b> {_price(operation["exit_price"])} '
-                    f'{_esc(view["currency"] or "")} · <b>taxas simuladas:</b> '
+                    f'<p class="ops-fact-line"><b>Preço de saída:</b> {_price(operation["exit_price"])} '
+                    f'{_esc(view["currency"] or "")} · <b>antes das taxas (slippage incluído):</b> '
+                    f'{_esc(_money(gross_pnl, view["currency"] or "USDT"))} · <b>taxas:</b> '
                     f'{_esc(_money(details.get("fees"), view["currency"] or "USDT"))}</p>'
                     f'<p class="ops-fact-line"><b>Resultado líquido:</b> '
                     f'{_esc(_money(view["net_pnl"], view["currency"] or "USDT"))} '
