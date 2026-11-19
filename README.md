@@ -55,7 +55,15 @@ Para abrir e acompanhar automaticamente posições **somente paper local** em BT
 python -m scripts.run_paper_auto
 ```
 
-Ele verifica o feed a cada 10 segundos, abre apenas candidatos recentes aprovados pelo risco com **2 USDT por entrada**, limita a duas posições e conduz posições abertas. O radar de SOL/BNB/XRP/ADA é somente observacional: não tem validação histórica por par, não reserva risco e não abre posição. Pare cada processo com `Ctrl+C` no terminal. O coletor e o computador precisam continuar ligados. Binance Spot Testnet e ordens reais não fazem parte da automação. O valor é em **USDT**, não em USD de uma conta. Operações paper encerradas mostram o P&L líquido em USDT, custos e resultado em R quando registrados. Esses valores são de simulação e não constituem saldo de corretora.
+Ele verifica o feed a cada 10 segundos, abre apenas candidatos recentes aprovados pelo risco com **2 USDT por entrada**, limita a duas posições e conduz posições abertas. O radar de SOL/BNB/XRP/ADA é somente observacional: possui análise histórica separada, mas não reserva risco nem abre posição. Essa validação histórica não altera os limites do processo automático. Pare cada processo com `Ctrl+C` no terminal. O coletor e o computador precisam continuar ligados. Binance Spot Testnet e ordens reais não fazem parte da automação. O valor é em **USDT**, não em USD de uma conta. Operações paper encerradas mostram o P&L líquido em USDT, custos e resultado em R quando registrados. Esses valores são de simulação e não constituem saldo de corretora.
+
+Para importar 90 dias UTC completos e gerar backtests/validações históricas de SOL/BNB/XRP/ADA (ação explícita, somente pesquisa, sem abrir paper):
+
+```powershell
+python -m scripts.run_watchlist_validation
+```
+
+O comando pode levar vários minutos devido à paginação da API pública Binance. Resultados ficam identificados como análise observacional; não promovem setups nem habilitam esses pares no Risk.
 
 ## Comandos e provas
 

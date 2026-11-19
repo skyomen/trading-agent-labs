@@ -263,14 +263,15 @@ def _fragility_flags(sides):
 
 
 def evaluate_validation(strategy, dataset_id, timeframe, holdout_fraction=0.3,
-                        cost_grid=DEFAULT_COST_GRID):
+                        cost_grid=DEFAULT_COST_GRID, allowed_symbols=None):
     """Validate one approved setup over one verified snapshot and label the sample.
 
     Reuses the provenance gate of ``services.setup_backtest`` unchanged, so an
     unapproved version, a changed source PDF or a non-verified dataset is
     refused here exactly as it is for a backtest.
     """
-    prepared = prepare_verified_run(strategy, dataset_id, timeframe)
+    prepared = prepare_verified_run(strategy, dataset_id, timeframe,
+                                    allowed_symbols=allowed_symbols)
     minutes = int(timeframe[:-1])
     split = split_bars_temporal(prepared["source_bars"], holdout_fraction, block_minutes=minutes)
     sides = {name: _evaluate_side(name, split[f"{name}_bars"], prepared["rules"],

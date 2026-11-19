@@ -248,7 +248,7 @@ def verify_source_documents(rules):
             raise ValueError("PDF de origem ausente, alterado ou sem índice atual: " + source["path"])
 
 
-def prepare_verified_run(strategy, dataset_id, timeframe, rules=None):
+def prepare_verified_run(strategy, dataset_id, timeframe, rules=None, allowed_symbols=None):
     """Single provenance gate shared by every engine that reads approved setups.
 
     Confirms the source PDFs are still indexed with the approved hash, restores
@@ -262,11 +262,14 @@ def prepare_verified_run(strategy, dataset_id, timeframe, rules=None):
     row, metadata = restored["dataset"], restored["metadata"]
     if not row["canonical_sha256"] or metadata.get("market") != "crypto" or row["timeframe"] != "1m":
         raise ValueError("Exige snapshot cripto de 1m com hash canônico; ações horárias são inelegíveis.")
-    if (row["symbol"] not in {"BTCUSDT", "ETHUSDT"} or metadata.get("quote_currency") != "USDT"
+    # The default remains the original, paper-eligible backtest universe.
+    # Watchlist analysis must opt into an explicit allowlist at the call site.
+    eligible_symbols = set(allowed_symbols if allowed_symbols is not None else {"BTCUSDT", "ETHUSDT"})
+    if (row["symbol"] not in eligible_symbols or metadata.get("quote_currency") != "USDT"
             or metadata.get("provider") != "Binance Spot public"):
         raise ValueError("Fonte/símbolo incompatível com esta execução de setup.")
     rule_hash = hashlib.sha256(strategy["rules_json"].encode("utf-8")).hexdigest()
-    return {
+    prepared = {
         "rules": rules, "tick_size": float(metadata["tick_size"]),
         "source_bars": restored["bars"],
         "provenance": {
@@ -281,14 +284,18 @@ def prepare_verified_run(strategy, dataset_id, timeframe, rules=None):
                         "source_timeframe": "1m", "complete_utc_blocks_only": True},
         },
     }
+    if allowed_symbols is not None and row["symbol"] not in {"BTCUSDT", "ETHUSDT"}:
+        prepared["provenance"]["analysis_only"] = True
+        prepared["provenance"]["paper_eligible"] = False
+    return prepared
 
 
 def run_approved(strategy, dataset_id, timeframe, fee_bps=10.0, slippage_bps=5.0,
-                 confirm_zero_costs=False):
+                 confirm_zero_costs=False, allowed_symbols=None):
     rules = verify_approved_rules(strategy, timeframe)
     if (fee_bps == 0 or slippage_bps == 0) and not confirm_zero_costs:
         raise ValueError("Custo zero exige confirmação explícita.")
-    prepared = prepare_verified_run(strategy, dataset_id, timeframe, rules)
+    prepared = prepare_verified_run(strategy, dataset_id, timeframe, rules, allowed_symbols)
     bars, coverage = aggregate_minutes(prepared["source_bars"], int(timeframe[:-1]))
     if not bars:
         raise ValueError("Nenhuma barra agregada completa.")
