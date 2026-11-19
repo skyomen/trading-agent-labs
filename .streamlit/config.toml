@@ -1,18 +1,25 @@
 [theme]
 base = "dark"
 font = "sans serif"
-primaryColor = "#f0a43a"
-backgroundColor = "#131a24"
-secondaryBackgroundColor = "#19222f"
-textColor = "#e9eef4"
-borderColor = "#2a3648"
+primaryColor = "#76b9ff"
+backgroundColor = "#0b1426"
+secondaryBackgroundColor = "#13243b"
+textColor = "#e8f1ff"
+borderColor = "#2d4662"
 
 [server]
 enableStaticServing = true
 
 [theme.dark]
-primaryColor = "#f0a43a"
-backgroundColor = "#131a24"
-secondaryBackgroundColor = "#19222f"
-textColor = "#e9eef4"
-borderColor = "#2a3648"
+primaryColor = "#76b9ff"
+backgroundColor = "#0b1426"
+secondaryBackgroundColor = "#13243b"
+textColor = "#e8f1ff"
+borderColor = "#2d4662"
+
+[theme.light]
+primaryColor = "#2f65ab"
+backgroundColor = "#f4f7fc"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#1e2e48"
+borderColor = "#d8e3f2"

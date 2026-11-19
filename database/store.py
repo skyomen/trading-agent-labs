@@ -7,7 +7,7 @@ import secrets
 from contextvars import ContextVar
 from decimal import Decimal
 from contextlib import closing, contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DB_PATH = Path(os.environ.get("TRADING_LAB_DATA_DIR", str(Path(__file__).resolve().parent))) / "trading.db"
@@ -583,7 +583,7 @@ def set_kill_switch(enabled, reason, actor):
 
 
 def record_heartbeat(component, state, details=""):
-    if component not in {"app", "collector:BTCUSDT", "collector:ETHUSDT"}:
+    if component not in {"app", "collector:BTCUSDT", "collector:ETHUSDT", "paper-auto"}:
         raise ValueError("Componente desconhecido.")
     with connect() as conn:
         conn.execute("""INSERT INTO service_heartbeats(component,state,details,last_seen_at)
@@ -977,6 +977,25 @@ def get_market_bars(provider, symbol, timeframe, limit=1000):
             WHERE provider=? AND symbol=? AND timeframe=? ORDER BY timestamp DESC LIMIT ?
         """, (provider, symbol, timeframe, limit)).fetchall()
         return [dict(row) for row in reversed(rows)]
+
+
+def get_market_bars_window(provider, symbol, timeframe, start_utc, end_utc, limit=3000):
+    """Closed bars in an inclusive UTC time window for one operation's chart."""
+    start = _parse_utc_timestamp(start_utc).astimezone(timezone.utc)
+    end = _parse_utc_timestamp(end_utc).astimezone(timezone.utc)
+    if start > end or limit <= 0:
+        raise ValueError("Janela de candles inválida.")
+    lower = start.strftime("%Y-%m-%dT%H:%M:%S")
+    upper = (end + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    with connect() as conn:
+        rows = conn.execute("""
+            SELECT timestamp,open,high,low,close,volume FROM market_bars
+            WHERE provider=? AND symbol=? AND timeframe=?
+              AND timestamp>=? AND timestamp<?
+            ORDER BY timestamp ASC LIMIT ?
+        """, (provider, symbol, timeframe, lower, upper, limit)).fetchall()
+    return [dict(row) for row in rows
+            if start <= _parse_utc_timestamp(row["timestamp"]) <= end]
 
 
 def _parse_utc_timestamp(value):

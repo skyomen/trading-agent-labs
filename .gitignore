@@ -18,4 +18,5 @@ reference_docs/workspaces/
 reference_docs/**/*.pdf
 _sandbox/
 .impeccable/review/
+.runtime/
 trading-agent-labs-preview.html

@@ -1,6 +1,6 @@
 # Referência técnica — Trading Agent Lab
 
-> Documentação do comportamento implementado e do estado observado até 17/11/2026. O código é a autoridade para implementação; `AGENTS.md` contém requisitos e decisões vigentes. Esta referência descreve o sistema existente e separa claramente o que ainda depende de dados, configuração ou decisão humana.
+> Documentação do comportamento implementado e do estado observado até 19/11/2026. O código é a autoridade para implementação; `AGENTS.md` contém requisitos e decisões vigentes. As seções 1–5 e 537 em diante descrevem o painel atual. As seções intermediárias de entregas anteriores são um registro histórico e podem conter interfaces/estados que já foram substituídos; não use essas descrições como instruções para reconstruir a UI. Veja `AGENTS.md` antes de alterar o produto.
 
 ## 1. Visão geral
 
@@ -8,10 +8,7 @@ Trading Agent Lab é um aplicativo local em Python e Streamlit para organizar se
 
 O modo de operação é local e simulado. Não existe integração validada com corretora, não se envia ordem real e o aplicativo não fabrica cotação, saldo, P&L ou atividade para preencher a interface. As telas que dependem de dados ausentes mostram estados vazios ou integração desconectada.
 
-O projeto tem duas apresentações:
-
-1. **Portal de referência (padrão):** localiza para pt-BR a estrutura HTML de `referencia.html` e injeta dados locais, sem executar os carregadores externos do HTML original.
-2. **Laboratório Streamlit:** selecionado após login; oferece os fluxos locais de perfil do agente, documentos, memória, revisão, tarefas, estratégias, CSV/backtest, operações simuladas e conexões.
+O painel local abre sem usuário/senha, com duas páginas: Operações e Mercado. Um dock fixo de vidro fosco na base alterna as páginas. Operações lê os registros persistidos e desenha candles locais via TradingView Lightweight Charts; Mercado incorpora o widget Advanced Chart oficial do TradingView para busca, indicadores e ferramentas de desenho. O widget de Mercado tem fonte externa própria e não é tratado como o feed local nem como prova de execução paper.
 
 ## 2. Como executar
 
@@ -44,14 +41,17 @@ python main.py dashboard
 - `test` executa a descoberta `unittest` em `tests/`.
 - `dashboard` inicia Streamlit em `app.py`, sem coleta de estatísticas de uso do navegador.
 - O atalho `iniciar_trading_lab.bat` executa `python main.py dashboard` a partir da pasta do projeto.
-- O endereço padrão do portal é `http://127.0.0.1:8501`. No primeiro acesso, cadastre o proprietário e entre. Depois do login, escolha Portal ou Laboratório na navegação.
+- O endereço padrão do painel local é `http://127.0.0.1:8501`. O modo local abre o workspace do proprietário sem pedir usuário ou senha. A navegação fixa apresenta Operações e Mercado.
 
 ## 3. Organização do código
 
 | Caminho | Responsabilidade observada |
 |---|---|
 | `main.py` | CLI com os comandos `status`, `test` e `dashboard`; inicializa o armazenamento. |
-| `app.py` | Portal padrão, localização da referência HTML e interface Streamlit do laboratório. |
+| `app.py` | Painel Streamlit local, tema e navegação fixa entre Operações e Mercado. |
+| `operations_page.py` | Operações paper persistidas, detalhamento, controles e gráfico local. |
+| `market_page.py` | Widget Advanced Chart do TradingView para pesquisa e estudo. |
+| `services/lightweight_chart.py` | Candles e eventos persistidos: marcadores de preço/tempo, stop, alvo e saída. |
 | `database/store.py` | Única camada de acesso SQLite; inicialização/migrações idempotentes e operações de leitura/escrita. |
 | `database/trading.db` | Workspace legado do proprietário, preservado. |
 | `database/identity.db`, `database/global_knowledge.db` | Contas locais e conhecimento comum promovido, respectivamente. |
@@ -62,10 +62,11 @@ python main.py dashboard
 | `services/backtest.py` | Validação/importação de CSV OHLCV e motor histórico de cruzamento de médias simples. |
 | `reference_docs/shared/` | PDFs comuns disponíveis à biblioteca local. |
 | `reference_docs/agents/<slug>/` | Local reservado para documentos específicos de cada agente. |
-| `referencia.html` | Referência estrutural/visual do portal. O portal trabalha sobre uma cópia em memória e não modifica este arquivo. |
+| `referencia.html` | Registro histórico da interface anterior; não é carregado pelo painel atual. |
 | `trading-office-preview.html`, `trading-lab-preview.html` | Artefatos de referência/protótipo local; não são bancos de dados nem fonte de resultados de mercado. |
 | `tests/` | Testes unitários de UI, serviços e persistência. |
 | `static/` | Fontes locais Archivo e Doto e seus arquivos de licença. |
+| Widget TradingView | Carregado no navegador ao abrir Mercado. Requer internet; o provedor controla os dados e recursos disponíveis. |
 | `.streamlit/config.toml` | Configuração local do Streamlit. |
 | `.env.example` | Nomes de variáveis de ambiente esperadas; não deve conter chaves reais. |
 
@@ -73,7 +74,7 @@ python main.py dashboard
 
 ```mermaid
 flowchart LR
-  User[Usuário] --> UI[app.py: portal ou laboratório]
+  User[Usuário] --> UI[app.py: painel único]
   UI --> Store[database/store.py]
   Store --> DB[(database/trading.db)]
   UI --> Docs[services/documents.py]
@@ -108,34 +109,24 @@ Decision e Knowledge nunca ganham registro próprio em `agents`/tela Sala: são 
 
 ## 5. Interface e áreas disponíveis
 
-### 5.1 Portal padrão
+### 5.1 Páginas locais atuais
 
-O portal usa o esqueleto de `referencia.html`, troca os rótulos em espanhol por rótulos pt-BR, atualiza a marca para Trading Agent Lab e injeta registros consultados localmente. O HTML de referência é preservado no disco. O código não executa os carregadores GitHub/Kraken que existiam na referência.
-
-O portal mostra cabeçalho/métricas, navegação lateral, vistas de sala, lista/resumo de agentes, painéis de estado, ticker de eventos locais e as vistas de Laboratório e Evolução do capital. Agentes, documentos, eventos e contagens vêm do SQLite. Recursos sem registros não são completados com exemplos fictícios.
-
-### 5.2 Laboratório (`?lab=1`)
-
-O laboratório oferece cinco áreas de navegação e quatro vistas de espaço de trabalho:
-
-| Área | O que faz / estado atual |
+| Área | Conteúdo e ações |
 |---|---|
-| **Agentes** | Lista os seis registros locais, apresenta perfil e permite ver visão geral, conhecimento/documentos, memória, revisão e execução de tarefa. |
-| **Mercado** | Feeds cripto persistidos com estado/frescor, snapshots Binance e históricos Market History/Alpaca IEX de ações com fonte, período e hash; distingue histórico de feed atual. |
-| **Operações** | Lista paper trades persistidos, separados de eventos de sistema; vazio quando não há operações conciliadas. |
-| **Informe** | Resumo factual de contagens/estado e resultados persistidos; não fabrica análise ou retorno. |
-| **Controle** | Mostra proteções, biblioteca de documentos, configuração do provedor e conexões; identifica itens não configurados. |
+| **Operações** | Lista operações paper persistidas. Ao selecionar uma, mostra gráfico OHLCV local, plano/sinal, entrada/saída registrada, setup, contexto, risco, stop/alvo, custos, resultado e limitações da trilha. O gráfico não afirma fill de corretora. |
+| **Mercado** | Card de título e widget Advanced Chart oficial do TradingView. Busca, intervalo, indicadores e ferramentas pertencem ao widget e seus dados não são gravados no SQLite nem usados pelo pipeline local. |
 
-As vistas do espaço de trabalho são:
+O modo local abre sem login, lê o workspace local do proprietário e oferece tema escuro por padrão com opção clara. A navegação é um dock fixo inferior. Controles e páginas de Pesquisa/Capital não fazem parte da UI local atual, embora serviços históricos continuem no repositório. Não publicar o servidor local diretamente na internet.
 
-- **Sala:** sala de analistas com cinco postos e sala de execução separada com um posto. A estação de execução só seleciona `Execution Agent`; a recepção de ordens permanece bloqueada. Desktop e variante compacta são renderizados por SVG local.
-- **Laboratório:** cadastro/revisão/aprovação de estratégias e importação/execução de backtest histórico.
-- **Orquestração (Entrega 7):** avalia automaticamente, ao abrir a aba, cada estratégia aprovada × símbolo elegível × timeframe do próprio setup sobre o feed ao vivo, com botão "Avaliar agora" para forçar nova checagem. Mostra a trilha de 7 estágios, o veredito do Risk Manager com a proveniência de cada checagem e o portão humano de quantidade (abrir posição simulada ou descartar candidato) para cada run `aguardando_quantidade`. Lista o histórico completo de runs com estágios, checagens de risco e relatório JSON para auditoria.
-- **Evolução do capital:** baseada somente em operações simuladas encerradas; não infere capital inicial. Sem registros, mostra estado vazio.
+O gráfico de Operações usa candles persistidos em `market_bars` e, para 2m/5m, reaproveita `aggregate_minutes`. As marcas de plano vêm de `pipeline_runs`; abertura e saída vêm de `paper_operations`. A hora da abertura paper é a registrada, que pode ser posterior à barra de sinal. Ausência de barras, plano ou operação permanece explícita. O coletor é processo separado (`python -m services.market_data stream`). A automação paper requer inicialização explícita em processo próprio (`python -m scripts.run_paper_auto`) e não é executada pelo dashboard.
 
-A interface segue o tema escuro fixo da referência, tem uma rolagem vertical do documento e adapta a sala para caber na largura disponível. A sala mantém suas mesas legíveis e não cria uma rolagem horizontal na página.
+Provas de versões anteriores nesta seção são históricas. A última prova de UI do painel Operações/Mercado está descrita em “Páginas Operações e Mercado” na seção 537 em diante; rode novamente os comandos ali indicados para validar o estado do checkout.
+
+O redesenho de seis áreas/login descrito em registros antigos foi superado. O fluxo vigente está em 5.1 e não inclui login local.
 
 ### 5.3 Perfis e fluxos de agente
+
+Os relatos de entregas anteriores nas seções seguintes registram a interface da época em que foram escritos; referências a Portal, Sala, iframe ou `?lab=1` nesses relatos são históricas. O fluxo vigente são as duas páginas descritas em 5.1.
 
 No perfil de cada agente, as abas cobrem:
 
@@ -223,6 +214,12 @@ Os dois documentos no banco são `reference_docs/shared/Oliver Velez/Apostila Ol
 
 A ação de indexação está no modo Laboratório, em **Controle**. A leitura e indexação são locais. Se o usuário optar por enviar trechos a provedor externo durante uma tarefa, a UI exige inclusão explícita dos documentos e confirmação/autorização; os arquivos originais não são enviados por simples indexação.
 
+#### Fontes de conhecimento do aplicativo
+
+`../vault/` contém o inventário e o plano do projeto; `../_capsule/` contém decisões, fatos e runs de trabalho. Eles dão contexto ao desenvolvimento, mas não são carregados automaticamente como regra de mercado pelo app. O material do método Oliver Velez fica nos PDFs de `reference_docs/shared/`, indexados localmente com hash, página e trechos no SQLite. `knowledge_items` conserva propostas e revisões; somente itens aprovados, com hash atual e escopo permitido podem entrar no contexto documental dos agentes. O agente só monta esse contexto quando a tarefa é iniciada explicitamente com documentos incluídos; envio a provedor externo exige autorização daquela tarefa.
+
+O detector e o pipeline de operações não fazem busca no vault nem chamam um modelo de IA para improvisar regra a cada candle. Eles usam regras versionadas em `strategies.rules_json`, com hash/páginas de origem; o pipeline confere que os PDFs aprovados continuam atuais. A cápsula não é um substituto do PDF original nem fonte de preço.
+
 ### Conhecimento estruturado e revisão humana (Entrega 2)
 
 O fluxo novo fica no perfil do Research Agent, em **Conhecimento**. A ação “Extrair propostas dos PDFs indexados” executa somente lógica local e determinística; não chama provedor de IA. Ela usa páginas identificadas da apostila principal para conceitos e do suplemento para títulos de setups, guardando o trecho integral daquela página como evidência. A extração é idempotente para a mesma fonte e hash.
@@ -233,7 +230,7 @@ Os 23 títulos do suplemento são descobertas (`DISCOVERED`) e ainda não têm f
 
 O status persistido do Research Agent é sincronizado a partir da situação local: aguarda documentos se nenhum PDF atual está indexado; aguarda extração quando há PDFs atuais mas nenhum item estruturado; indica revisão humana enquanto há propostas; e indica conhecimento revisado após a aprovação das propostas pendentes. Essa sincronização ocorre ao abrir o aplicativo, indexar a biblioteca e extrair propostas, e só grava evento quando o status muda. Fontes com hash divergente não alimentam contexto.
 
-Para esta entrega, o catálogo de setups cobre páginas 1–5 e 7–9 do suplemento. A extração por catálogo não afirma que as demais páginas ou capítulos estejam completamente estruturados. Imagens, gráficos e tabelas não foram submetidos a OCR; o texto extraído depende do conteúdo textual do PDF. A revisão humana continua necessária para validar significado, completude e campos técnicos.
+Para esta entrega, o catálogo de setups cobre páginas 1–5 e 7–9 do suplemento. A extração por catálogo não afirma que as demais páginas ou capítulos estejam completamente estruturados. Imagens, gráficos e tabelas não entram na extração textual automática; a análise visual manual posterior está documentada em “Auditoria visual das fontes de setup” na seção Operações. A revisão humana continua necessária para validar significado, completude e campos técnicos.
 
 ## 9. Provedor de IA e execução de tarefas
 
@@ -532,6 +529,49 @@ O conector histórico opcional usa o [endpoint de barras Alpaca](https://docs.al
 Para dados de ações, ausência de candle pode representar mercado fechado, falta de negócios na IEX ou falha de conexão; sem calendário e estado de sessão, não se infere qual deles. Para cripto, o estado atrasado usa a idade do processo e do último candle. Nenhum feed é tratado como preço negociável nem gera sinal, P&L ou ordem.
 
 Provas automatizadas: `python main.py test` passou com 46 testes após a migração/importação; os testes das fontes cobrem candle incompleto, ausência de credenciais e reprodução do CSV público de ações. Playwright confirmou os feeds atuais no portal e ausência de rolagem horizontal em 1440×1000, 390×844 e 320×740; o cabeçalho do laboratório indicou `2 / 2` feeds cripto atuais. O aceite histórico da Entrega 4 contempla BTCUSDT, ETHUSDT, AAPL e MSFT. Para backtests intraday dos quatro setups, as amostras horárias de ações podem ser insuficientes; uma fonte de minuto autorizada será necessária antes de validar esses setups em ações. Tempo real para ações permanece pendente de acesso a provedor apropriado.
+
+### Preferência de paper automático (18/11/2026)
+
+O proprietário definiu **2 USDT por entrada simulada**, com controle manual entre 1 e 10 USDT. `services/execution.py::confirm_open_usdt` converte esse valor em unidades de BTC/ETH pelo preço congelado na trilha e chama o mesmo portão de risco e kill switch de `confirm_open`. A interface da Orquestração mostra 2 USDT por padrão, as posições e oportunidades primeiro, e recolhe Testnet, auditoria, diário e aprendizado. Nenhuma conversão USDT/USD ou saldo é presumido.
+
+`python -m scripts.run_paper_auto` roda como processo local separado. A cada 10 segundos, reconduz posições paper abertas, avalia os setups aprovados em BTCUSDT/ETHUSDT e confirma automaticamente somente candidatos com feed conectado, gatilho já registrado em candle fechado e atraso de no máximo 45 segundos após o fechamento da barra de entrada. O processo aceita apenas `paper_operations`, nunca chama Binance Spot Testnet nem corretora real, e respeita limite de duas posições, orçamento de risco e bloqueio operacional. Heartbeat `paper-auto` permite ver se parou. `--once` executa uma rodada de prova e sai. Computador, coletor e processo precisam continuar ligados; o painel sozinho não mantém a automação. A entrada paper usa preço histórico congelado, não cotação executável atual.
+
+### Páginas Operações e Mercado (19/11/2026)
+
+`app.py` mostra as páginas `operations_page.py` e `market_page.py`, ligadas por um dock fixo de vidro fosco no rodapé. A página Operações atualiza a leitura de registros a cada 10 segundos e mostra estado do processo paper, frescor dos dois feeds, posições abertas, encerradas e resultado realizado simulado. Cada operação abre uma vista de detalhe com setup, intervalo, preços, quantidade, P&L líquido quando há diário íntegro, R, motivo de saída, premissas de custos, contexto do sinal, risco, ressalvas e proveniência. Registros legados sem trilha ou diário mantêm ausência explícita.
+
+`services/operation_details.py` lê a operação, a trilha, a estratégia versionada e o diário; `database/store.py::get_market_bars_window` seleciona os candles 1m por janela UTC, tolerando `Z` e `+00:00`. A agregação 2m/5m usa `aggregate_minutes`, que descarta blocos incompletos. `services/charting.py::build_operation_chart` prepara os candles/eventos; `services/lightweight_chart.py` os renderiza via Lightweight Charts com triângulos orientados para a direita no preço e horário registrados, segmentos STOP/ALVO e guia vertical na saída. O eixo é UTC; a tabela OHLCV dos candles marcados permite conferência. Nenhum marcador é apresentado como fill da Binance. Lacunas e limite da janela permanecem explícitos.
+
+`market_page.py` incorpora o widget Advanced Chart oficial do TradingView com busca de símbolos, intervalos, estudos e ferramentas de desenho. O widget é externo, carregado sob demanda ao acessar Mercado, e usa sua própria conexão/dados. Portanto, não altera a fonte Binance local, os registros paper, nem a proveniência das entradas. O usuário pode comparar o mesmo símbolo e intervalo entre o widget e o candle local, lembrando que cobertura, horário e atualização podem divergir.
+
+O cabeçalho de Mercado é um card escuro minimalista, com apenas o título e um elemento gráfico abstrato, inspirado na apresentação visual do app Revolut. Não há métricas nem valores ilustrativos nesse card.
+
+Verificação do redesenho de 19/11/2026: `python main.py test` concluiu 159 testes com `OK`. `python scripts/check_operations_ui.py` carregou o widget TradingView e conferiu rotas, triângulos do gráfico local e navegação fixa em 1440×1000, 390×844 e 320×740, sem rolagem horizontal.
+
+A [pesquisa MetaTrader 5](docs/integrations/metatrader5-research.md) registra possibilidades e lacunas para B3 e ações americanas. A [pesquisa da conta Binance própria](docs/integrations/binance-account-readonly.md) descreve uma consulta futura com permissão `USER_DATA` de uma chave somente leitura, conforme a [documentação oficial da Binance](https://developers.binance.com/en/docs/products/spot/rest-api); nenhuma chave ou dado privado é solicitado nesta página e nenhum histórico de conta é misturado com paper local.
+
+Uma proposta visual isolada está em `docs/design/operacoes-preview.html`, gerada por `python -m scripts.build_operations_preview` a partir de uma operação e candles paper persistidos. Ela organiza lista e detalhe na mesma página, com resultado, gráfico e razões de entrada e saída. Após a aprovação do usuário, a direção visual foi aplicada ao Streamlit. A prova anterior da página local foi `python main.py test` (155 testes, OK) e `python scripts/check_operations_ui.py` (1440×1000, 390×844 e 320×740, lista, detalhe, gráfico e OHLCV sem corte).
+
+O usuário aprovou a direção da prévia e pediu aplicação com tema escuro por padrão e troca para claro. A página usa uma lista de operações que abre o detalhe na mesma rota e empilha conteúdo em telas estreitas. O gráfico usa triângulos preenchidos pequenos no preço e candle da entrada/saída simuladas (verde para compra, fúcsia para venda), linha horizontal tracejada âmbar `STOP`, pontilhada azul `ALVO` e guia vertical `SAÍDA`. Não há losangos ou quadrados. Stop e alvo são níveis do plano, não ordens encaminhadas à Binance; a saída usa preço paper final após slippage. O passo a passo usa entrada, stop do plano, parciais apenas se existirem no diário e saída final. O motor atual não registra parciais; a ausência é indicada explicitamente. A explicação do método combina regras versionadas com valores persistidos e identifica o que não foi registrado.
+
+Em ajuste visual posterior, a paleta passou a azul marinho, painéis azul petróleo e acentos azuis. O verde dos marcadores de compra e o fúcsia dos marcadores de venda foram preservados para manter o significado operacional.
+
+Em 19/11/2026, a folha do gráfico recebeu largura máxima de 100% e o SVG acompanha a largura do contêiner com corte de overflow. `scripts/check_operations_ui.py` verifica as caixas do card/SVG, lista, detalhe e OHLCV em 1440×1000, 390×844 e 320×740; inspeção visual confirmou os candles e marcadores dentro do card nos três tamanhos.
+
+#### Auditoria visual das fontes de setup (19/11/2026)
+
+Os PDFs foram renderizados em PNG e examinados visualmente, página por página, nas páginas de setup e ilustrações: apostila, pp. 101–115 (VBS/VSS), 145–150 (NRB e BT/TT), 159–176 (sinais de reversão e exemplo VBS), 179–185 (suportes/resistências), 223–245 (BOP/BDP) e figuras de contexto nas pp. 95, 295, 305 e 308; suplemento, pp. 1–9. O texto extraído foi comparado às imagens, não usado como substituto delas. As imagens mostram a posição do preço perante as médias, os níveis de suporte/resistência, bases, alertas, gatilhos, stops e alvos; vários desses elementos são discricionários ou não têm definição algorítmica completa nos PDFs.
+
+| Setup | O que as páginas e figuras trazem | Diferença observada na formalização aprovada e detector atual |
+|---|---|---|
+| VBS | Tendência e fechamento acima da 20MA ascendente; 3+ LH/LL ou 3+ barras vermelhas (p. 101; ilustrações pp. 104–110). O capítulo diz que uma queda de 3–5 barras só deve ser comprada com um dos sinais de reversão (p. 159), ilustrados como BT, GBR, NBB e NRB (pp. 161–167); BT/TT usam cauda ≥2/3 do range e acionamento no rompimento da barra (p. 150). O exemplo resumido do VBS lista 20MA crescente, 20MA>200MA, BT/GBR/NRB/NBB e horário de reversão (pp. 175–176). Localização em suporte e retrações de 33/50/55% (pp. 101–103, 179–181), alternativa de entrada 55%/100% (p. 108), gestão/trailing (pp. 101, 104, 110). A figura de 2m recomenda 20MA crescente e acima da 200MA para compras intraday (p. 305); p. 101, porém, diz que a 200MA acima é ideal, mas não obrigatória. O suplemento p. 4 pede reversão, suporte/20MA e segundo acionamento. | O detector executa 3 barras vermelhas exatas, inclinação/posição da SMA20 e gatilho após o extremo do candle; não verifica que a barra/candle forme BT, GBR, NBB ou NRB, nem a faixa de 3–5, horário, localização, estrutura LH/LL ou entrada 55%. Os próprios textos distinguem VBS geral e contexto específico de microtrading; a regra aprovada atual não explicita essa escolha. |
+| VSS | Tendência sob 20MA descendente; 3+ HL/HH ou 3+ barras verdes; resistência, horário e sinais de topo (p. 111; ilustrações pp. 113–115). O capítulo diz que um rali de 3–5 barras só deve ser vendido com sinal de reversão (p. 160); TT/RBR/NBB/NRB estão desenhados nas pp. 168–174; cauda de TT ≥2/3 do range e gatilho pela mínima da barra (p. 150). NRBs e VSS próximo da 20MA aparecem na figura p. 149. As regras de localização reforçam resistência de preço/MA/retração e sinal de topo (pp. 182–185). O suplemento p. 4 pede reversão, resistência/20MA e segundo acionamento. | Mesmo recorte estreito: 3 barras verdes exatas e SMA20, sem verificação de sinal TT/RBR/NBB/NRB, retração de 3–5 barras, resistência, horário ou segundo acionamento; estrutura HL/HH também foi explicitamente adiada na versão atual. |
+| BOP | Base fina/estreita, barras pequenas, volume leve, idealmente 8MA/20MA ascendente; entrada na barra que rompe os últimos 2/3, stop na barra de rompimento e alvo pela altura da base (p. 223); figuras e localização perto das médias (pp. 224–229); checklist inclui NRBs, base nos 33% superiores do avanço anterior, 8MA ascendente e rompimento perto da 8MA (p. 230); oportunidades secundárias após o rompimento (pp. 233–238). NRB é qualitativa (barras pequenas/contração); não há limite numérico universal na definição visual das pp. 145–148. A figura 2m acrescenta 20MA crescente e acima da 200MA como filtro de compra intraday (p. 305). | O detector usa base de 3–8 candles, amplitude ≤1,5 ATR20, volume médio abaixo das 20 barras anteriores e SMA8 ascendente; entra um tick além do extremo completo da base. Não verifica NRBs, os 33% do movimento anterior nem proximidade da média; o gatilho não implementa literalmente os últimos 2/3. |
+| BDP | Base estreita e volume leve; 20MA e/ou 8MA descendente (mais importante no BDP); entrada ao romper os últimos 2/3, stop na barra ou base, alvo pela altura (p. 239); figuras e qualidade/localização (pp. 240–242); sequência rompimento inicial, correção, segundo rompimento e VSS (p. 243); WRB e base na parte inferior (p. 244). Suplemento p. 4 reforça NRBs, base nos 33% inferiores da queda e proximidade da 8MA. A apostila descreve NRB como contração/barra pequena, sem limite numérico geral (pp. 145–148). | O detector usa a mesma compressão por ATR/volume e SMA8 descendente, entra além do extremo completo da base e não registra/verifica o contexto visual, os NRBs, os 33% inferiores ou a proximidade da média. |
+
+As regras aprovadas no SQLite são versões imutáveis; esta auditoria não as reescreve nem promove outra estratégia. A lacuna de entrada dos dois terços e os filtros visuais é material: as entradas BOP/BDP registradas usam a formalização do extremo completo da base, que não é reprodução literal do gatilho ilustrado. Na leitura do histórico deste workspace, apareceram três candidatos VBS e três VSS; todos foram negados pelo Risk por `perda_diaria_atingida`, e não há posição VBS/VSS registrada. As quatro posições registradas foram uma BOP e três BDP, todas encerradas. Uma nova versão fiel ao material ainda precisa de regras operacionais inequívocas e revisão/aprovação humana, antes de backtest ou retomada automática com parâmetros alterados.
+
+`services/setup_specs.PAGES` agora inclui páginas ilustradas/contextuais e definições de sinais de reversão para futuros rascunhos; VBS/VSS também citam a página 7 do suplemento. Isso não altera as citações das versões aprovadas já persistidas. `services/operation_details.py` passa a expor, na ficha de operação, os limites de correspondência entre a formalização e as fontes.
 
 As regras e requisitos ativos vivem em [`AGENTS.md`](AGENTS.md). As decisões de referência, localização e layout residem em `../_capsule/decisoes/`, especialmente:
 

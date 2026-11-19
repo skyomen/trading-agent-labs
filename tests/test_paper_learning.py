@@ -167,29 +167,17 @@ class PaperLearningTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             paper_learning.create_draft(result["proposal_id"], changed)
 
-    def test_lab_review_and_draft_actions(self):
+    def test_learning_proposal_remains_persisted_without_old_page(self):
         for index in range(30):
             self.seed_trade(index, day=index // 15)
         result = paper_learning.analyze_cohort(self.strategy_id, "BTCUSDT", "2m")
         app = AppTest.from_file(str(APP_PATH))
         app.session_state["auth-user"] = {"id": self.owner_id, "username": "test_owner", "role": "owner"}
         app.session_state["vault-key"] = bytes(32)
-        app.query_params["lab"] = "1"
-        app.session_state["tal-view"] = "Orquestração"
         app.run()
         self.assertFalse(app.exception)
-        next(button for button in app.button if button.label == "Aprovar hipótese").click().run()
-        self.assertFalse(app.exception)
-        self.assertEqual(store.get_paper_learning_proposal(result["proposal_id"])["status"], "approved")
-        edited = json.loads(json.dumps(self.rules))
-        edited["pattern"]["min_bars"] = 4
-        next(area for area in app.text_area if area.label == "Regras editadas da nova versão (JSON)").set_value(
-            json.dumps(edited, ensure_ascii=False))
-        next(button for button in app.button if button.label == "Criar versão como rascunho").click().run()
-        self.assertFalse(app.exception)
-        proposal = store.get_paper_learning_proposal(result["proposal_id"])
-        self.assertIsNotNone(proposal["draft_strategy_id"])
-        self.assertEqual(store.get_strategy(proposal["draft_strategy_id"])["status"], "draft")
+        self.assertFalse(any(button.label == "Aprovar hipótese" for button in app.button))
+        self.assertEqual(store.get_paper_learning_proposal(result["proposal_id"])["status"], "proposed")
 
 
 if __name__ == "__main__":

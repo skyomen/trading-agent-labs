@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from database import store
+from scripts import run_paper_auto
 from services import decision, execution, market_data, pipeline, risk
 
 ORIGIN = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -293,6 +294,73 @@ class ConfirmOpenTests(PipelineTestBase):
         self.assertEqual(operations[0]["entry_price"], 100.5)
         self.assertEqual(operations[0]["state"], "open")
         self.assertEqual(store.get_pipeline_run(run_id)["status"], "posicao_aberta")
+
+    def test_two_usdt_budget_converts_to_asset_units(self):
+        strategy = self.approved_strategy()
+        run_id = self.seed_pending_run(strategy["id"])
+        result = execution.confirm_open_usdt(run_id, 2)
+        self.assertEqual(result["amount_usdt"], 2.0)
+        self.assertAlmostEqual(store.list_paper_operations()[0]["quantity"], 2 / 100.5)
+        self.assertAlmostEqual(store.list_paper_operations()[0]["quantity"] *
+                               store.list_paper_operations()[0]["entry_price"], 2.0)
+
+    def test_usdt_budget_rejects_out_of_range_without_writing(self):
+        strategy = self.approved_strategy()
+        run_id = self.seed_pending_run(strategy["id"])
+        for amount in (0.5, 11, float("nan")):
+            with self.assertRaisesRegex(ValueError, "entre 1 e 10"):
+                execution.confirm_open_usdt(run_id, amount)
+        self.assertEqual(store.list_paper_operations(), [])
+
+    def test_paper_auto_opens_only_fresh_candidate_with_two_usdt(self):
+        strategy = self.approved_strategy()
+        now = datetime.now(timezone.utc)
+        run_id = self.seed_pending_run(strategy["id"], signal_bar=now.isoformat())
+        run = store.get_pipeline_run(run_id)
+        report = json.loads(run["report_json"])
+        report["execution"]["barra_de_entrada_utc"] = (now - timedelta(minutes=2, seconds=10)).isoformat()
+        store.update_pipeline_run_status(run_id, "aguardando_quantidade", report=report)
+        store.update_market_feed(market_data.PROVIDER, "BTCUSDT", "1m", "connected",
+                                 last_bar_at=(now - timedelta(seconds=60)).isoformat())
+        with patch.object(store, "list_strategies", return_value=[]), \
+             patch.object(run_paper_auto.trade_management, "replay_open_operations", return_value=[]):
+            result = run_paper_auto.run_once()
+            again = run_paper_auto.run_once()
+        self.assertEqual(len(result["opened"]), 1)
+        self.assertEqual(again["opened"], [])
+        self.assertAlmostEqual(store.list_paper_operations()[0]["quantity"] * 100.5, 2.0)
+
+    def test_paper_auto_does_not_open_stale_candidate(self):
+        strategy = self.approved_strategy()
+        now = datetime.now(timezone.utc)
+        run_id = self.seed_pending_run(strategy["id"], signal_bar=now.isoformat())
+        run = store.get_pipeline_run(run_id)
+        report = json.loads(run["report_json"])
+        report["execution"]["barra_de_entrada_utc"] = (now - timedelta(minutes=10)).isoformat()
+        store.update_pipeline_run_status(run_id, "aguardando_quantidade", report=report)
+        store.update_market_feed(market_data.PROVIDER, "BTCUSDT", "1m", "connected",
+                                 last_bar_at=(now - timedelta(seconds=60)).isoformat())
+        with patch.object(store, "list_strategies", return_value=[]), \
+             patch.object(run_paper_auto.trade_management, "replay_open_operations", return_value=[]):
+            result = run_paper_auto.run_once()
+        self.assertEqual(result["opened"], [])
+        self.assertEqual(store.list_paper_operations(), [])
+
+    def test_paper_auto_respects_kill_switch(self):
+        strategy = self.approved_strategy()
+        now = datetime.now(timezone.utc)
+        run_id = self.seed_pending_run(strategy["id"], signal_bar=now.isoformat())
+        report = json.loads(store.get_pipeline_run(run_id)["report_json"])
+        report["execution"]["barra_de_entrada_utc"] = (now - timedelta(minutes=2, seconds=10)).isoformat()
+        store.update_pipeline_run_status(run_id, "aguardando_quantidade", report=report)
+        store.update_market_feed(market_data.PROVIDER, "BTCUSDT", "1m", "connected",
+                                 last_bar_at=(now - timedelta(seconds=60)).isoformat())
+        store.set_kill_switch(True, "pausa solicitada", "owner")
+        with patch.object(store, "list_strategies", return_value=[]), \
+             patch.object(run_paper_auto.trade_management, "replay_open_operations", return_value=[]):
+            result = run_paper_auto.run_once()
+        self.assertTrue(result["blocked"])
+        self.assertEqual(store.list_paper_operations(), [])
 
     def test_confirm_open_rejects_non_positive_quantity_and_writes_nothing(self):
         strategy = self.approved_strategy()

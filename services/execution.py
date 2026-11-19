@@ -20,6 +20,31 @@ from database import store
 from services.risk import MAX_OPEN_POSITIONS
 
 SIDE_LABELS = {"buy": "compra", "sell": "venda"}
+MIN_ENTRY_USDT = 1.0
+MAX_ENTRY_USDT = 10.0
+DEFAULT_ENTRY_USDT = 2.0
+
+
+def confirm_open_usdt(run_id, amount_usdt):
+    """Confirm a local paper entry using a user-selected USDT notional."""
+    try:
+        amount = float(amount_usdt)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Informe um valor em USDT entre 1 e 10.") from exc
+    if not math.isfinite(amount) or not MIN_ENTRY_USDT <= amount <= MAX_ENTRY_USDT:
+        raise ValueError("Informe um valor em USDT entre 1 e 10.")
+    run = store.get_pipeline_run(run_id)
+    if not run or run["status"] != "aguardando_quantidade":
+        raise ValueError("Esta trilha não está aguardando confirmação.")
+    if run["symbol"] not in {"BTCUSDT", "ETHUSDT"}:
+        raise ValueError("Valor em USDT disponível apenas para BTCUSDT e ETHUSDT.")
+    plan = json.loads(run["report_json"]).get("execution") or {}
+    price = plan.get("entrada")
+    if not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
+        raise ValueError("Trilha sem preço de entrada válido.")
+    quantity = amount / price
+    result = confirm_open(run_id, quantity)
+    return {**result, "amount_usdt": amount, "quantity": quantity}
 
 
 def build_execution_plan(decision, risk_result, candidate_signal, rules):

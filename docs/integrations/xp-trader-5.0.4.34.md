@@ -35,3 +35,15 @@ Se essas respostas forem obtidas, registrar o documento/versão e seu hash local
 - `app.py` apresenta XP Trader 5.0.4.34 como desconectado. Não há função de envio XP.
 - O feed cripto Binance e os históricos de ações dos EUA usam fontes próprias; nenhum deles é apresentado como dado XP.
 - A Binance Spot Testnet da Entrega 11 é um adaptador virtual separado e não serve como prova de integração XP.
+
+## Atualização em 18/11/2026 — processo de contratação da ProfitDLL
+
+Usuário relatou não encontrar a ProfitDLL dentro do próprio XP Trader. Confirmado (ver
+`_capsule/fatos/FCT-0001-profitdll-contratacao-separada.md`, confiança "medium" — fontes
+indexadas por busca, página oficial bloqueou leitura automatizada direta): ter Profit/XP Trader
+via corretora **não inclui** a ProfitDLL. É produto separado, contratado direto com a Nelogica
+(`nelogica.com.br/login` → "Assinaturas" → licença "DLL Feed" → download; sem contrato ainda,
+contato comercial em `corporativo@nelogica.com.br`). A DLL cobre B3, não Binance/cripto nem
+ações dos EUA. Isso não altera nenhuma das confirmações pendentes listadas acima — ainda falta
+saber se a licença XP Trader 5.0.4.34 do usuário é elegível para contratar a DLL e se a conta de
+simulação seria roteável por ela.

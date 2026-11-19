@@ -7,8 +7,17 @@ from services import documents
 
 SOURCE = "reference_docs/shared/Oliver Velez/Apostila Oliver Velez.pdf"
 SUPPLEMENT = "reference_docs/shared/Oliver Velez/Setups Complementar Op. OV Atualizada.pdf"
-PAGES = {"VBS": (101, 102), "VSS": (111, 112),
-         "BOP": (223, 224, 230), "BDP": (239, 240)}
+# Keep the setup illustrations and context pages with each future proposal.
+# The currently approved SQLite versions are immutable and retain their original
+# citations; these expanded ranges apply only when a new draft is registered.
+PAGES = {
+    "VBS": (*range(101, 116), 145, 146, 148, 150, 159, *range(161, 168),
+            175, 176, *range(179, 182), 295, 305, 308),
+    "VSS": (*range(111, 116), 145, 146, 148, 150, 160, *range(168, 175),
+            *range(182, 186)),
+    "BOP": (*range(223, 239), 145, 146, 148, 305),
+    "BDP": (*range(239, 246), 145, 146, 148),
+}
 IDS = {"VBS": "SETUP_01", "VSS": "SETUP_02",
        "BOP": "SETUP_03", "BDP": "SETUP_04"}
 
@@ -33,7 +42,8 @@ def proposed_rules():
             "timeframes": ["2m", "5m"], "status": "parameter_review",
             "source": [
                 {"path": SOURCE, "sha256": hashes[SOURCE], "pages": list(PAGES[name])},
-                {"path": SUPPLEMENT, "sha256": hashes[SUPPLEMENT], "pages": [4]},
+                {"path": SUPPLEMENT, "sha256": hashes[SUPPLEMENT],
+                 "pages": [4, 7] if pullback else [4]},
             ],
             "pattern": (
                 {"kind": "three_countertrend_bars", "bars": 3,

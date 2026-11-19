@@ -380,6 +380,18 @@ class TradeManagementSchemaTests(unittest.TestCase):
         self.assertEqual([bar["timestamp"] for bar in defensive],
                          [boundary["timestamp"], after["timestamp"]])
 
+    def test_market_bar_window_keeps_both_utc_suffix_conventions(self):
+        provider, symbol, timeframe = "TestProvider", "ETHUSDT", "1m"
+        for minute, suffix in ((7, "Z"), (8, "+00:00"), (9, "Z"), (10, "+00:00")):
+            store.upsert_market_bar(provider, symbol, timeframe,
+                                    {"timestamp": f"2026-11-12T20:{minute:02d}:00{suffix}",
+                                     "open": 1, "high": 2, "low": 1, "close": 2, "volume": 3})
+        bars = store.get_market_bars_window(provider, symbol, timeframe,
+                                            "2026-11-12T20:08:00Z",
+                                            "2026-11-12T20:09:00+00:00")
+        self.assertEqual([bar["timestamp"] for bar in bars],
+                         ["2026-11-12T20:08:00+00:00", "2026-11-12T20:09:00Z"])
+
 
 if __name__ == "__main__":
     unittest.main()

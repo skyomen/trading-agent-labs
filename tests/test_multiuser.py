@@ -113,34 +113,26 @@ class MultiuserTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 documents.index_pdf(source)
 
-    def test_login_gate_and_portal_snapshot_use_active_workspace(self):
+    def test_local_page_uses_owner_workspace_without_login(self):
         with store.user_workspace(self.owner["id"]):
             store.add_event("Owner", "INFO", "owner-only-event")
         app = AppTest.from_file(str(APP_PATH)).run()
         self.assertFalse(app.exception)
         self.assertEqual(len(app.get("iframe")), 0)
-        app.text_input[0].set_value("other")
-        app.text_input[1].set_value("other-password-123")
-        next(button for button in app.button if button.label == "Entrar").click().run()
-        self.assertFalse(app.exception, [item.message for item in app.exception])
-        self.assertEqual(len(app.get("iframe")), 1)
-        self.assertNotIn("owner-only-event", app.get("iframe")[0].proto.srcdoc)
-        next(button for button in app.button if button.label == "Sair").click().run()
-        self.assertEqual(len(app.get("iframe")), 0)
+        self.assertFalse(any(item.key == "tal-page" for item in app.radio))
+        self.assertTrue(any("Operações" in str(item.value) for item in app.title))
+        self.assertFalse(any(button.label == "Entrar" for button in app.button))
 
-    def test_first_run_bootstrap_preserves_legacy_workspace(self):
+    def test_first_run_without_login_preserves_legacy_workspace(self):
         with patch.object(store, "IDENTITY_DB_PATH", Path(self.tmp.name) / "fresh_identity.db"):
             store.add_event("Legacy", "INFO", "historico-preservado")
             app = AppTest.from_file(str(APP_PATH)).run()
             self.assertFalse(app.exception)
             self.assertEqual(len(app.get("iframe")), 0)
-            app.text_input[0].set_value("new_owner")
-            app.text_input[1].set_value("new-owner-password-123")
-            app.text_input[2].set_value("new-owner-password-123")
-            next(button for button in app.button if button.label == "Criar acesso principal").click().run()
-            self.assertFalse(app.exception, [item.message for item in app.exception])
-            self.assertEqual(len(app.get("iframe")), 1)
-            self.assertIn("historico-preservado", app.get("iframe")[0].proto.srcdoc)
+            self.assertFalse(any(item.key == "tal-page" for item in app.radio))
+            self.assertFalse(any(button.label == "Criar acesso principal" for button in app.button))
+            self.assertTrue(any(row["Atividade"] == "historico-preservado"
+                                for row in store.list_events()))
 
     def test_online_mode_never_offers_public_owner_registration(self):
         with patch.object(store, "IDENTITY_DB_PATH", Path(self.tmp.name) / "online_identity.db"), \
