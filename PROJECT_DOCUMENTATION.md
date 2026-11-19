@@ -52,6 +52,7 @@ python main.py dashboard
 | `operations_page.py` | Operações paper persistidas, detalhamento, controles e gráfico local. |
 | `market_page.py` | Widget Advanced Chart do TradingView para pesquisa e estudo. |
 | `services/lightweight_chart.py` | Candles e eventos persistidos: marcadores de preço/tempo, stop, alvo e saída. |
+| `services/setup_radar.py` | Sinais observacionais de setups em quatro pares adicionais; não avalia Risk nem abre posições. |
 | `database/store.py` | Única camada de acesso SQLite; inicialização/migrações idempotentes e operações de leitura/escrita. |
 | `database/trading.db` | Workspace legado do proprietário, preservado. |
 | `database/identity.db`, `database/global_knowledge.db` | Contas locais e conhecimento comum promovido, respectivamente. |
@@ -171,6 +172,7 @@ O arquivo é `database/trading.db`; `database/store.py` configura `sqlite3.Row`,
 | `historical_datasets` | Arquivo, símbolo, intervalo, fonte declarada, SHA-256 do CSV, número de barras, manifesto JSON e SHA-256 canônico das barras. |
 | `market_bars` | Candles fechados recebidos pelo coletor, separados dos snapshots históricos por fonte, símbolo, intervalo e horário. |
 | `market_feeds` | Estado de conexão, último candle, última verificação e erro; a interface considera o registro atrasado quando o coletor não atualiza. |
+| `setup_observations` | Sinais/gatilhos em SOLUSDT, BNBUSDT, XRPUSDT e ADAUSDT para estudo; idempotentes por estratégia/par/intervalo/candle e separados de Risk, pipeline e posições. |
 | `historical_bars` | OHLCV histórico por dataset e timestamp; dataset + timestamp são chave primária. |
 | `backtests` | Estratégia, ativo, intervalo, origem/hash dos dados, métricas JSON, estado e data. |
 | `paper_operations` | Operações simuladas, lado, quantidade, preços, custo, fonte, estado aberto/encerrado/cancelado, `pipeline_run_id` (Entrega 7) ligando a posição à trilha que a autorizou, e `exit_reason` (Entrega 8, coluna aditiva: `stop`/`trailing_stop`/`target`/`entry_bar_ambiguous_stop`/`gap_boundary`/`end_of_data`) preenchido junto com `exit_price`/`closed_at` quando a condução fecha a posição. |
@@ -545,6 +547,8 @@ O proprietário definiu **2 USDT por entrada simulada**, com controle manual ent
 `market_page.py` incorpora o widget Advanced Chart oficial do TradingView com busca de símbolos, intervalos, estudos e ferramentas de desenho. O widget é externo, carregado sob demanda ao acessar Mercado, e usa sua própria conexão/dados. Portanto, não altera a fonte Binance local, os registros paper, nem a proveniência das entradas. O usuário pode comparar o mesmo símbolo e intervalo entre o widget e o candle local, lembrando que cobertura, horário e atualização podem divergir.
 
 O cabeçalho de Mercado é um card escuro minimalista, com apenas o título e um elemento gráfico abstrato, inspirado na apresentação visual do app Revolut. Não há métricas nem valores ilustrativos nesse card.
+
+O **Radar de setups** na página Operações observa adicionalmente SOLUSDT, BNBUSDT, XRPUSDT e ADAUSDT. `services/setup_radar.py` analisa apenas candles fechados 1m agregados em blocos completos 2m/5m, lê o `tickSize` público de Binance `exchangeInfo` (cache máximo de uma hora) e grava somente quando há padrão ou gatilho real. As linhas ficam em `setup_observations`, sem risco, execução, entrada paper ou impacto na conta diária; a tela avisa que os pares ainda não têm backtest/validação próprios. `scripts/run_paper_auto.py` chama o radar a cada ciclo de 10s, mas abre automaticamente apenas BTCUSDT/ETHUSDT. O coletor passa a manter seis streams, quatro exclusivamente observacionais. Snapshots e backtests aprovados continuam restritos a BTC/ETH conforme REQ-19. A expansão de elegibilidade paper exige nova aprovação e validação por símbolo.
 
 Verificação do redesenho de 19/11/2026: `python main.py test` concluiu 159 testes com `OK`. `python scripts/check_operations_ui.py` carregou o widget TradingView e conferiu rotas, triângulos do gráfico local e navegação fixa em 1440×1000, 390×844 e 320×740, sem rolagem horizontal.
 

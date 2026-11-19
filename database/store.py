@@ -378,6 +378,21 @@ def initialize():
             )
         """)
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS setup_observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                strategy_id INTEGER NOT NULL REFERENCES strategies(id),
+                setup_id TEXT NOT NULL,
+                setup_name TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                signal_bar_utc TEXT NOT NULL,
+                state TEXT NOT NULL CHECK(state IN ('aguardando_gatilho','gatilho_observado')),
+                report_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(strategy_id,symbol,timeframe,signal_bar_utc)
+            )
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS pipeline_runs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 pipeline_version TEXT NOT NULL,
@@ -583,7 +598,9 @@ def set_kill_switch(enabled, reason, actor):
 
 
 def record_heartbeat(component, state, details=""):
-    if component not in {"app", "collector:BTCUSDT", "collector:ETHUSDT", "paper-auto"}:
+    if component not in {"app", "collector:BTCUSDT", "collector:ETHUSDT",
+                         "collector:SOLUSDT", "collector:BNBUSDT", "collector:XRPUSDT",
+                         "collector:ADAUSDT", "paper-auto"}:
         raise ValueError("Componente desconhecido.")
     with connect() as conn:
         conn.execute("""INSERT INTO service_heartbeats(component,state,details,last_seen_at)
@@ -968,6 +985,37 @@ def update_market_feed(provider, symbol, timeframe, status, last_bar_at=None, er
 def list_market_feeds():
     with connect() as conn:
         return [dict(row) for row in conn.execute("SELECT * FROM market_feeds ORDER BY provider,symbol")]
+
+
+def save_setup_observation(strategy_id, setup_id, setup_name, symbol, timeframe,
+                           signal_bar_utc, state, report):
+    if state not in {"aguardando_gatilho", "gatilho_observado"}:
+        raise ValueError("Estado de observação inválido.")
+    report_json = json.dumps(report or {}, ensure_ascii=False, sort_keys=True)
+    with connect() as conn:
+        cursor = conn.execute("""
+            INSERT INTO setup_observations(strategy_id,setup_id,setup_name,symbol,timeframe,
+                signal_bar_utc,state,report_json)
+            VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(strategy_id,symbol,timeframe,signal_bar_utc)
+            DO NOTHING
+        """, (strategy_id, setup_id, setup_name, symbol, timeframe,
+              signal_bar_utc, state, report_json))
+        return cursor.rowcount == 1
+
+
+def list_setup_observations(limit=100, symbols=None):
+    query = "SELECT * FROM setup_observations"
+    params = []
+    if symbols:
+        clean = tuple(dict.fromkeys(str(symbol) for symbol in symbols))
+        if not clean:
+            return []
+        query += " WHERE symbol IN (" + ",".join("?" for _ in clean) + ")"
+        params.extend(clean)
+    query += " ORDER BY signal_bar_utc DESC,id DESC LIMIT ?"
+    params.append(max(1, min(int(limit), 1000)))
+    with connect() as conn:
+        return [dict(row) for row in conn.execute(query, params).fetchall()]
 
 
 def get_market_bars(provider, symbol, timeframe, limit=1000):

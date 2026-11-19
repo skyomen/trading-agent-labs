@@ -1,6 +1,7 @@
 """Single Operations surface for the local simulated trading workspace."""
 
 import html
+import json
 from datetime import datetime, timezone
 
 import streamlit as st
@@ -147,6 +148,86 @@ def _list(items):
                     f'<span class="ops-transaction-result"><strong class="{tone}">{_esc(result)}</strong>'
                     f'<small>{_esc(item["exit_label"] if closed else "Em andamento")}</small></span>'
                     '</a>', unsafe_allow_html=True)
+
+
+def _watchlist_radar():
+    from services.market_data import OBSERVATION_ONLY_SYMBOLS, PROVIDER
+
+    with st.expander("Radar de setups · observação", expanded=False):
+        st.caption("SOL, BNB, XRP e ADA · Binance Spot · candles fechados. "
+                   "Sem backtest validado nesses pares, sem reserva de risco e sem abertura paper.")
+        feeds = {item["symbol"]: item for item in store.list_market_feeds()
+                 if item["provider"] == PROVIDER and item["timeframe"] == "1m"}
+        feed_states = []
+        for symbol in OBSERVATION_ONLY_SYMBOLS:
+            feed = feeds.get(symbol)
+            fresh = observability.feed_freshness(feed)["current"] if feed else False
+            state = "atual" if fresh else "desatualizado" if feed else "sem feed"
+            feed_states.append(f"{symbol.removesuffix('USDT')} {state}")
+        st.caption("Feeds: " + " · ".join(feed_states))
+        observations = store.list_setup_observations(limit=30, symbols=OBSERVATION_ONLY_SYMBOLS)
+        if not observations:
+            st.info("Ainda não há setup ou gatilho observado neste radar. "
+                    "A análise começa quando o coletor estiver atualizado.")
+            return
+        rows = []
+        for item in observations:
+            report = json.loads(item["report_json"])
+            signal = report.get("signal") or {}
+            rows.append({
+                "Ativo": item["symbol"],
+                "Setup": item["setup_name"],
+                "Lado": "Compra" if signal.get("side") == "buy" else "Venda",
+                "Gráfico": item["timeframe"],
+                "Estado": "Gatilho observado" if item["state"] == "gatilho_observado" else "Aguardando gatilho",
+                "Candle UTC": item["signal_bar_utc"],
+                "Entrada ref.": report.get("entry_reference"),
+                "Stop ref.": signal.get("stop"),
+                "Alvo ref.": signal.get("target"),
+                "Incremento": report.get("tick_size"),
+            })
+        st.dataframe(rows, hide_index=True, width="stretch")
+        chosen_id = st.selectbox(
+            "Abrir contexto do sinal",
+            [item["id"] for item in observations],
+            format_func=lambda item_id: next(
+                f"{item['symbol']} · {item['setup_name']} · {item['timeframe']} · {item['signal_bar_utc']}"
+                for item in observations if item["id"] == item_id),
+            key="setup-radar-selection",
+        )
+        chosen = next(item for item in observations if item["id"] == chosen_id)
+        report = json.loads(chosen["report_json"])
+        signal = report["signal"]
+        rules = report.get("rules") or {}
+        if not rules and chosen.get("strategy_id"):
+            strategy = store.get_strategy(chosen["strategy_id"])
+            if strategy:
+                persisted_rules = json.loads(strategy["rules_json"])
+                rules = {key: persisted_rules.get(key) for key in
+                         ("pattern", "entry", "stop", "target", "filters", "source")}
+        pattern = rules.get("pattern") or {}
+        if pattern.get("kind") == "compressed_base":
+            reason = (f"Base comprimida de {pattern.get('min_bars')} a {pattern.get('max_bars')} candles; "
+                      f"amplitude máxima de {pattern.get('max_range_atr20')} ATR20 e volume abaixo da média anterior. "
+                      f"Tendência medida pela SMA{pattern.get('trend_ma')}.")
+        else:
+            reason = (f"Setup de retração com {pattern.get('bars')} candles contra a tendência; "
+                      f"tendência medida pela SMA{pattern.get('trend_ma')}.")
+        state = "o preço acionador foi tocado no candle seguinte" if report.get("triggered") else \
+                "o candle seguinte ainda não tocou o preço acionador"
+        st.markdown(f"**Por que apareceu:** {reason}")
+        st.write(f"Candle do sinal: `{chosen['signal_bar_utc']}` · candle verificador: "
+                 f"`{report.get('trigger_bar_utc')}`; {state}.")
+        st.write(f"Referências do setup: entrada {_price(report.get('entry_reference'))} · "
+                 f"stop {_price(signal.get('stop'))} · alvo {_price(signal.get('target'))} · "
+                 f"tickSize {_price(report.get('tick_size'))}.")
+        sources = rules.get("source") or []
+        if sources:
+            st.caption("Método: " + "; ".join(
+                f"{item.get('path')} · páginas {item.get('pages')} · hash {item.get('sha256')}"
+                for item in sources))
+        st.warning("Esta observação não foi validada por backtest neste ativo. Não é ordem nem entrada paper; "
+                   "Risk não foi executado e o limite diário não foi consumido.")
 
 
 def _detail(view):
@@ -333,6 +414,7 @@ def _content(actor):
         _overview(items)
         _status()
         _list(items)
+        _watchlist_radar()
         _controls(actor)
 
 

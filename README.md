@@ -41,7 +41,7 @@ Também há uma [alternativa gerenciada na Render](docs/deploy/render.md), com s
 
 ## Testar com candles ao vivo e resultados simulados
 
-Em um terminal, mantenha o coletor público ativo:
+Em um terminal, mantenha o coletor público ativo. Ele coleta BTCUSDT/ETHUSDT para o ciclo paper e SOLUSDT/BNBUSDT/XRPUSDT/ADAUSDT apenas para observação:
 
 ```powershell
 python -m services.market_data stream
@@ -49,13 +49,13 @@ python -m services.market_data stream
 
 Em outro terminal, abra o painel com `python main.py dashboard`. O dock fixo inferior alterna entre **Operações** e **Mercado**. Em Operações, selecione uma operação para ver candles locais fechados Binance Spot no mesmo par e intervalo; a tabela OHLCV permite conferir os candles marcados. Triângulos preenchidos apontados para a direita indicam a entrada e a saída paper no preço e candle da trilha. Linhas âmbar e azul mostram STOP e ALVO planejados; uma guia vertical marca o horário da saída. O passo a passo só mostra fatos registrados e informa quando não houve parcial.
 
-Para abrir e acompanhar automaticamente posições **somente paper local** sem manter a tela aberta, inicie um terceiro processo:
+Para abrir e acompanhar automaticamente posições **somente paper local** em BTCUSDT/ETHUSDT sem manter a tela aberta, inicie um terceiro processo:
 
 ```powershell
 python -m scripts.run_paper_auto
 ```
 
-Ele verifica o feed a cada 10 segundos, abre apenas candidatos recentes aprovados pelo risco com **2 USDT por entrada**, limita a duas posições e conduz posições abertas. Pare com `Ctrl+C` no terminal. O coletor e o computador precisam continuar ligados. Binance Spot Testnet e ordens reais não fazem parte da automação. O valor é em **USDT**, não em USD de uma conta. Operações paper encerradas mostram o P&L líquido em USDT, custos e resultado em R quando registrados. Esses valores são de simulação e não constituem saldo de corretora.
+Ele verifica o feed a cada 10 segundos, abre apenas candidatos recentes aprovados pelo risco com **2 USDT por entrada**, limita a duas posições e conduz posições abertas. O radar de SOL/BNB/XRP/ADA é somente observacional: não tem validação histórica por par, não reserva risco e não abre posição. Pare cada processo com `Ctrl+C` no terminal. O coletor e o computador precisam continuar ligados. Binance Spot Testnet e ordens reais não fazem parte da automação. O valor é em **USDT**, não em USD de uma conta. Operações paper encerradas mostram o P&L líquido em USDT, custos e resultado em R quando registrados. Esses valores são de simulação e não constituem saldo de corretora.
 
 ## Comandos e provas
 

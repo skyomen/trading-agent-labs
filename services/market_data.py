@@ -19,12 +19,16 @@ from services import datasets
 from services.config import current_credentials, load_local_env
 
 REST = "https://data-api.binance.vision/api/v3/klines"
+EXCHANGE_INFO = "https://data-api.binance.vision/api/v3/exchangeInfo"
 STREAM = "wss://data-stream.binance.vision:443/ws/{}@kline_1m"
 SYMBOLS = ("BTCUSDT", "ETHUSDT")
+ANALYSIS_SYMBOLS = SYMBOLS + ("SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT")
+OBSERVATION_ONLY_SYMBOLS = tuple(symbol for symbol in ANALYSIS_SYMBOLS if symbol not in SYMBOLS)
 PROVIDER = "Binance Spot public"
 ALPACA_BARS = "https://data.alpaca.markets/v2/stocks/bars"
 MARKET_HISTORY = "https://getmarkethistory.com/api/v1/bars/stocks/us/{}/1h?format=csv"
 STOCKS = ("AAPL", "MSFT")
+_SYMBOL_METADATA_CACHE = {}
 
 
 def _stamp(milliseconds):
@@ -41,7 +45,7 @@ def _bar(row):
 
 
 def fetch_closed_klines(symbol, limit=1000, timeframe="1m"):
-    if symbol not in SYMBOLS or timeframe not in {"1m", "5m"} or not 3 <= limit <= 1000:
+    if symbol not in ANALYSIS_SYMBOLS or timeframe not in {"1m", "5m"} or not 3 <= limit <= 1000:
         raise ValueError("Símbolo, intervalo ou limite não suportado.")
     url = REST + "?" + urlencode({"symbol": symbol, "interval": timeframe, "limit": limit})
     with urlopen(url, timeout=15) as response:
@@ -55,6 +59,37 @@ def fetch_closed_klines(symbol, limit=1000, timeframe="1m"):
     return bars
 
 
+def symbol_metadata(symbol):
+    """Read current public Spot filters; never guess an instrument tick size."""
+    if symbol not in ANALYSIS_SYMBOLS:
+        raise ValueError("Símbolo fora da lista de análise autorizada.")
+    cached = _SYMBOL_METADATA_CACHE.get(symbol)
+    if cached and time.time() - cached["loaded_at"] < 3600:
+        return dict(cached["metadata"])
+    request = Request(EXCHANGE_INFO + "?" + urlencode({"symbol": symbol}),
+                      headers={"User-Agent": "TradingAgentLab/1.0"})
+    with urlopen(request, timeout=15) as response:
+        payload = json.load(response)
+    entries = payload.get("symbols", [])
+    item = next((row for row in entries if row.get("symbol") == symbol), None)
+    if not item or item.get("status") != "TRADING" or item.get("quoteAsset") != "USDT":
+        raise ValueError(f"{symbol} não está ativo como par Spot/USDT na fonte consultada.")
+    price_filter = next((row for row in item.get("filters", [])
+                         if row.get("filterType") == "PRICE_FILTER"), None)
+    if not price_filter:
+        raise ValueError(f"A fonte não informou PRICE_FILTER para {symbol}.")
+    tick_size = float(price_filter.get("tickSize", 0))
+    if tick_size <= 0:
+        raise ValueError(f"Incremento de preço inválido para {symbol}.")
+    metadata = {"symbol": symbol, "status": item["status"], "quote_asset": item["quoteAsset"],
+                "tick_size": tick_size, "tick_size_source": "Binance Spot exchangeInfo",
+                "min_notional": next((float(row.get("minNotional", 0))
+                                       for row in item.get("filters", [])
+                                       if row.get("filterType") in {"NOTIONAL", "MIN_NOTIONAL"}), None)}
+    _SYMBOL_METADATA_CACHE[symbol] = {"loaded_at": time.time(), "metadata": metadata}
+    return dict(metadata)
+
+
 def _csv_bytes(bars):
     output = io.StringIO(newline="")
     writer = csv.DictWriter(output, fieldnames=["timestamp", "open", "high", "low", "close", "volume"], lineterminator="\n")
@@ -65,6 +100,8 @@ def _csv_bytes(bars):
 
 def import_recent(symbol, limit=1000):
     """Import a bounded, immutable snapshot on an explicit user action."""
+    if symbol not in SYMBOLS:
+        raise ValueError("Snapshots elegíveis para backtest permanecem limitados a BTCUSDT/ETHUSDT.")
     bars = fetch_closed_klines(symbol, limit=limit)
     result = datasets.import_csv(_csv_bytes(bars), f"binance-{symbol}-1m-{bars[0]['timestamp']}.csv", {
         "symbol": symbol, "market": "crypto", "provider": PROVIDER,
@@ -157,7 +194,7 @@ def _backfill(symbol):
 
 def collect_symbol_forever(symbol, stop_event=None):
     """Backfill gaps then reconnect after disconnect; persist only closed candles."""
-    if symbol not in SYMBOLS:
+    if symbol not in ANALYSIS_SYMBOLS:
         raise ValueError("Símbolo não suportado.")
     from websockets.sync.client import connect
 
@@ -190,7 +227,7 @@ def main():
     load_local_env()
     parser = argparse.ArgumentParser(description="Coletor público Binance; só candles fechados")
     parser.add_argument("command", choices=["import", "import-stock", "stream"])
-    parser.add_argument("--symbol", choices=SYMBOLS + STOCKS)
+    parser.add_argument("--symbol", choices=ANALYSIS_SYMBOLS + STOCKS)
     args = parser.parse_args()
     store.initialize()
     if args.command == "import":
@@ -204,9 +241,9 @@ def main():
         result = import_public_stock_history(args.symbol)
         print(f"Dataset #{result['id']} {args.symbol} {result['metadata']['row_count']} barras; sha256:{result['sha256']}")
     else:
-        if args.symbol and args.symbol not in SYMBOLS:
-            parser.error("O coletor público suporta apenas BTCUSDT e ETHUSDT")
-        symbols = (args.symbol,) if args.symbol else SYMBOLS
+        if args.symbol and args.symbol not in ANALYSIS_SYMBOLS:
+            parser.error("O coletor ao vivo suporta a lista de pares Spot/USDT de análise")
+        symbols = (args.symbol,) if args.symbol else ANALYSIS_SYMBOLS
         threads = [threading.Thread(target=collect_symbol_forever, args=(symbol,), daemon=True)
                    for symbol in symbols]
         for thread in threads:

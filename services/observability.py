@@ -38,7 +38,9 @@ APP_HEARTBEAT_MAX_AGE_SECONDS = 86400
 # Components that are expected to exist in a complete local install. Absence is reported
 # explicitly instead of being silently skipped. Must stay a subset of the vocabulary
 # validated by `store.record_heartbeat`.
-EXPECTED_COMPONENTS = ("app", "collector:BTCUSDT", "collector:ETHUSDT")
+EXPECTED_COMPONENTS = ("app", "collector:BTCUSDT", "collector:ETHUSDT",
+                       "collector:SOLUSDT", "collector:BNBUSDT",
+                       "collector:XRPUSDT", "collector:ADAUSDT")
 
 SEVERITY_CRITICAL = "critico"
 SEVERITY_WARNING = "atencao"

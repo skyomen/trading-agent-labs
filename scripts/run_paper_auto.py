@@ -11,7 +11,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from database import store
-from services import execution, pipeline, trade_management
+from services import execution, pipeline, setup_radar, trade_management
 from services.market_data import PROVIDER, SYMBOLS
 
 POLL_SECONDS = 10
@@ -66,9 +66,10 @@ def run_once():
                     pipeline.run_pipeline(strategy, symbol, timeframe)
                 except (ValueError, RuntimeError) as exc:
                     print(f"Avaliação ignorada: {rules['setup_name']} {symbol} {timeframe}: {exc}", flush=True)
+    radar = setup_radar.scan_observation_watchlist(approved, now=datetime.now(timezone.utc))
     opened = []
     if store.get_kill_switch()["enabled"]:
-        return {"opened": opened, "managed": managed, "blocked": True}
+        return {"opened": opened, "managed": managed, "blocked": True, "radar": radar}
     for run in store.list_pending_pipeline_runs():
         check_time = datetime.now(timezone.utc)
         if not _feed_is_fresh(run["symbol"], check_time) or not _fresh_pending(run, check_time):
@@ -82,7 +83,7 @@ def run_once():
                         f"Abertura paper automática #{result['paper_operation_id']}: "
                         f"{run['setup_name']} {run['symbol']} {execution.DEFAULT_ENTRY_USDT:.2f} USDT")
         opened.append(result)
-    return {"opened": opened, "managed": managed, "blocked": False}
+    return {"opened": opened, "managed": managed, "blocked": False, "radar": radar}
 
 
 def main():
@@ -103,7 +104,8 @@ def main():
                 try:
                     result = run_once()
                     store.record_heartbeat("paper-auto", "running")
-                    if result["opened"] or any(item["estado"] == "fechada" for item in result["managed"]):
+                    if (result["opened"] or result["radar"]["created"] or
+                            any(item["estado"] == "fechada" for item in result["managed"])):
                         print(json.dumps(result, ensure_ascii=False, default=str), flush=True)
                 except Exception as exc:
                     store.record_heartbeat("paper-auto", "error")
